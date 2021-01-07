@@ -37,13 +37,15 @@ class GameNet(nn.Module):
     def __init__(self, action_count):
         super().__init__()
         self.conv1 = nn.Conv2d(4, 16, 8, 4)
+        self.conv1_bn = nn.BatchNorm2d(16)
         self.conv2 = nn.Conv2d(16, 32, 4, 2)
+        self.conv2_bn = nn.BatchNorm2d(32)
         self.hidden_linear = nn.Linear(32 * 9 * 9, 256)
         self.output_layer = nn.Linear(256, action_count)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv1_bn(self.conv1(x)))
+        x = F.relu(self.conv2_bn(self.conv2(x)))
         x = x.view(-1, 32 * 9 * 9)
         x = F.relu(self.hidden_linear(x))
         return self.output_layer(x)
@@ -61,7 +63,6 @@ class DQN(LightningModule):
 
     def forward(self, observation):
         result = self.network(observation).to(dtype=torch.float64)
-        #print("RESULT", result)
         return torch.max(result, 1)
 
     def training_step(self, data, batch_idx):
@@ -71,8 +72,6 @@ class DQN(LightningModule):
             yj = reward + ((1 - is_done.long()) * (self.discount_factor * predicted_reward))
         predicted_reward, action = self(observation)
         loss = nn.MSELoss()(yj, predicted_reward)
-        print("LOSS", loss)
-
         return loss
 
     def find_new_history(self, observation):
@@ -99,7 +98,6 @@ class DQN(LightningModule):
         first_observation = torch.squeeze(first_observation)
         second_observation_collated = torch.squeeze(torch.tensor(second_observation.__array__(np.float32)))
         state_tuple = (first_observation, reward, is_done, second_observation_collated)
-        print("EPSILON", self.epsilon)
         if self.epsilon > 0.1:
             self.epsilon -= 0.0000009
         if is_done:
