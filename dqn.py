@@ -60,6 +60,7 @@ class DQN(LightningModule):
         self.epsilon = 1.0
         self.discount_factor = 0.85
         self.network = GameNet(self.env.action_space.n)
+        self.epoch_length = 50000
 
     def forward(self, observation):
         result = self.network(observation).to(dtype=torch.float64)
@@ -95,9 +96,7 @@ class DQN(LightningModule):
             _, action = self(first_observation)
 
         second_observation, reward, is_done, info = self.env.step(action)
-        first_observation = torch.squeeze(first_observation)
-        second_observation_collated = torch.squeeze(torch.tensor(second_observation.__array__(np.float32)))
-        state_tuple = (first_observation, reward, is_done, second_observation_collated)
+        state_tuple = (self.observation, reward, is_done, second_observation)
         if self.epsilon > 0.1:
             self.epsilon -= 0.0000009
         if is_done:
@@ -106,12 +105,20 @@ class DQN(LightningModule):
         self.observation = second_observation
 
 
+    def prepare_for_batch(self, observation):
+      observation = torch.tensor(observation.__array__(np.float32))
+      observation = observation.permute(3, 0, 1, 2)
+      return torch.squeeze(observation)
+
     def train_batch(self):
-        while(True):
+        i = 0
+        while(i < self.epoch_length):
+            i+= 1
             self.play_step()
             tuples = self.memory.sample(32)
             for t in tuples:
-                yield t
+                (first_observation, reward, is_done, second_observation) = t
+                yield (self.prepare_for_batch(first_observation), reward, is_done, self.prepare_for_batch(second_observation))
 
     def train_dataloader(self):
         self.dataset = ExperienceSourceDataset(self.train_batch)
@@ -122,4 +129,4 @@ class DQN(LightningModule):
         return DataLoader(dataset=self.dataset, batch_size=32)
 
 lr_monitor = LearningRateMonitor(logging_interval='step')
-Trainer(callbacks=[lr_monitor]).fit(DQN(0.01))
+Trainer(callbacks=[lr_monitor], progress_bar_refresh_rate=20).fit(DQN(0.01))
