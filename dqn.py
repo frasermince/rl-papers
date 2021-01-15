@@ -31,25 +31,30 @@ class Memory:
             self.items.pop(0)
 
     def sample(self, n):
+        # print("NUMBER OF ITEMS", len(self.items))
         return random.sample(self.items, n)
 
 class GameNet(nn.Module):
     def __init__(self, action_count):
         super().__init__()
         #print("ACTION COUNT", action_count)
-        self.conv1 = nn.Conv2d(4, 16, 8, 4)
-        # self.conv1_bn = nn.BatchNorm2d(16)
-        self.conv2 = nn.Conv2d(16, 32, 4, 2)
-        # self.conv2_bn = nn.BatchNorm2d(32)
-        self.hidden_linear = nn.Linear(32 * 9 * 9, 256)
-        self.output_layer = nn.Linear(256, action_count)
+        self.conv_layers = nn.Sequential(
+                nn.Conv2d(4, 16, 8, 4),
+                nn.ReLU(),
+                nn.Conv2d(16, 32, 4, 2),
+                nn.ReLU(),
+        )
+        self.fully_connected = nn.Sequential(
+                nn.Linear(32 * 9 * 9, 512),
+                nn.ReLU(),
+                nn.Linear(512, action_count)
+
+        )
 
     def forward(self, x):
-        x = F.relu(self.conv1(x / 255))
-        x = F.relu(self.conv2(x))
+        x = self.conv_layers(x / 255)
         x = x.view(-1, 32 * 9 * 9)
-        x = F.relu(self.hidden_linear(x))
-        return self.output_layer(x)
+        return self.fully_connected(x)
 
 class DQN(LightningModule):
     def __init__(self, learning_rate= 1e-4):
@@ -67,9 +72,11 @@ class DQN(LightningModule):
         self.games = 0
         self.epoch_length = 50000
         self.learning_rate = learning_rate
+        self.steps_to_train = 2
 
     def forward(self, observation, net):
         result = net(observation).to(dtype=torch.float64)
+        # print("REWARDS", result)
         m, action = torch.max(result, 1)
         return m, action
 
@@ -84,8 +91,8 @@ class DQN(LightningModule):
         with torch.no_grad():
             predicted_reward, action = self(next_observation, self.target_network)
         #print("IS ONGOING", 1 - is_done.long())
-        #print("PREDICTED REWARD", ((1 - is_done.long()) * (self.discount_factor * predicted_reward)))
-        #print("CURRENT REWARD", reward)
+        # print("PREDICTED REWARD", ((1 - is_done.long()) * (self.discount_factor * predicted_reward)))
+        # print("CURRENT REWARD", reward)
         yj = reward + ((1 - is_done.long()) * (self.discount_factor * predicted_reward))
         #print("VALUE", yj)
         predicted_reward, action = self(observation, self.network)
@@ -115,8 +122,6 @@ class DQN(LightningModule):
         self.reward += reward
         self.game_reward += reward
         state_tuple = (self.observation, reward, is_done, second_observation)
-        if self.epsilon > 0.1:
-            self.epsilon -= 0.0000009
         if is_done:
             self.logger.experiment.add_scalar("game_score", self.game_reward, self.games)
             self.observation = self.env.reset()
@@ -137,10 +142,15 @@ class DQN(LightningModule):
         while(i < self.epoch_length):
             i+= 1
             self.play_step()
-            tuples = self.memory.sample(32)
-            for t in tuples:
-                (first_observation, reward, is_done, second_observation) = t
-                yield (self.prepare_for_batch(first_observation), reward, is_done, self.prepare_for_batch(second_observation))
+            if i % self.steps_to_train == 0:
+
+                if self.epsilon > 0.1:
+                    self.epsilon -= 0.000009
+                tuples = self.memory.sample(32 * self.steps_to_train)
+                # print("TUPLES", tuples)
+                for t in tuples:
+                    (first_observation, reward, is_done, second_observation) = t
+                    yield (self.prepare_for_batch(first_observation), reward, is_done, self.prepare_for_batch(second_observation))
 
     def training_epoch_end(self, outputs):
         if self.games != 0:
@@ -156,9 +166,9 @@ class DQN(LightningModule):
         for i in range(10000):
             self.play_step()
 
-        return DataLoader(dataset=self.dataset, batch_size=32)
+        return DataLoader(dataset=self.dataset, batch_size=32 * self.steps_to_train)
 
-lightning_module = DQN()#.load_from_checkpoint("./lightning_logs/version_82/checkpoints/epoch=26-step=1316096.ckpt")
+lightning_module = DQN()#.load_from_checkpoint("./lightning_logs/version_152/checkpoints/epoch=1-step=77948.ckpt")
 trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=40, auto_lr_find=True)
 #trainer.tune(lightning_module)
 trainer.fit(lightning_module)
