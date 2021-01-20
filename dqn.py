@@ -9,6 +9,7 @@ import numpy as np
 from pl_bolts.datamodules.experience_source import Experience, ExperienceSourceDataset
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import LearningRateMonitor
+import time
 # env = gym.make("Pong-v0")
 # observation = env.reset()
 # for _ in range(10000):
@@ -31,7 +32,6 @@ class Memory:
             self.items.pop(0)
 
     def sample(self, n):
-        # print("NUMBER OF ITEMS", len(self.items))
         return random.sample(self.items, n)
 
 class GameNet(nn.Module):
@@ -39,13 +39,15 @@ class GameNet(nn.Module):
         super().__init__()
         #print("ACTION COUNT", action_count)
         self.conv_layers = nn.Sequential(
-                nn.Conv2d(4, 16, 8, 4),
+                nn.Conv2d(4, 32, kernel_size=8, stride=4),
                 nn.ReLU(),
-                nn.Conv2d(16, 32, 4, 2),
+                nn.Conv2d(32, 64, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, stride=1),
                 nn.ReLU(),
         )
         self.fully_connected = nn.Sequential(
-                nn.Linear(32 * 9 * 9, 512),
+                nn.Linear(64 * 7 * 7, 512),
                 nn.ReLU(),
                 nn.Linear(512, action_count)
 
@@ -53,7 +55,7 @@ class GameNet(nn.Module):
 
     def forward(self, x):
         x = self.conv_layers(x / 255)
-        x = x.view(-1, 32 * 9 * 9)
+        x = x.view(-1, 64 * 7 * 7)
         return self.fully_connected(x)
 
 class DQN(LightningModule):
@@ -75,10 +77,11 @@ class DQN(LightningModule):
         self.steps_to_train = 2
 
     def forward(self, observation, net):
-        result = net(observation).to(dtype=torch.float64)
-        # print("REWARDS", result)
-        m, action = torch.max(result, 1)
-        return m, action
+        return net(observation).to(dtype=torch.float64)
+
+    def test_step(self, batch, x):
+        #time.sleep(.04)
+        return batch
 
     def training_step(self, data, batch_idx):
         self.log("reward", self.reward, prog_bar=True, on_step=True)
@@ -87,18 +90,19 @@ class DQN(LightningModule):
         self.log("lr", self.learning_rate, prog_bar=True, on_step=True)
         self.log("game_reward", self.game_reward, prog_bar=True, on_step=True)
 
-        (observation, reward, is_done, next_observation) = data
+        (observation, reward, actions, is_done, next_observation) = data
         with torch.no_grad():
-            predicted_reward, action = self(next_observation, self.target_network)
-        #print("IS ONGOING", 1 - is_done.long())
+            predicted_reward, action = torch.max(self(next_observation, self.target_network), 1)
+            predicted_reward = predicted_reward.detach()
+        # print("IS ONGOING", 1 - is_done.long())
         # print("PREDICTED REWARD", ((1 - is_done.long()) * (self.discount_factor * predicted_reward)))
         # print("CURRENT REWARD", reward)
         yj = reward + ((1 - is_done.long()) * (self.discount_factor * predicted_reward))
         #print("VALUE", yj)
-        predicted_reward, action = self(observation, self.network)
+        current_predicted_reward = self(observation, self.network).gather(1, actions.unsqueeze(-1)).squeeze(-1)
         if self.global_step % self.target_update_rate == 0:
             self.target_network.load_state_dict(self.network.state_dict())
-        loss = nn.MSELoss()(yj, predicted_reward)
+        loss = nn.MSELoss()(current_predicted_reward, yj)
         return loss
 
     def configure_optimizers(self):
@@ -107,28 +111,29 @@ class DQN(LightningModule):
         return optimizer
 
 
-    def play_step(self):
+    def play_step(self, epsilon):
         self.env.render()
         first_observation = torch.tensor(self.observation.__array__(np.float32))
         first_observation = first_observation.permute(3, 0, 1, 2)
-        if random.uniform(0, 1) <= self.epsilon:
+        if random.uniform(0, 1) <= epsilon:
             action = self.env.action_space.sample()
         else:
-            values, action = self(first_observation, self.network)
+            values, action = torch.max(self(first_observation, self.network), 1)
             action = action.item()
             #print("ACTION", action)
 
         second_observation, reward, is_done, info = self.env.step(action)
         self.reward += reward
         self.game_reward += reward
-        state_tuple = (self.observation, reward, is_done, second_observation)
+        state_tuple = (self.observation, reward, action, is_done, second_observation)
         if is_done:
             self.logger.experiment.add_scalar("game_score", self.game_reward, self.games)
             self.observation = self.env.reset()
             self.game_reward = 0
             self.games += 1
 
-        self.memory.append(state_tuple)
+        if epsilon != 0:
+            self.memory.append(state_tuple)
         self.observation = second_observation
 
 
@@ -137,11 +142,11 @@ class DQN(LightningModule):
       observation = observation.permute(3, 0, 1, 2)
       return torch.squeeze(observation)
 
-    def train_batch(self):
+    def test_batch(self):
         i = 0
         while(i < self.epoch_length):
             i+= 1
-            self.play_step()
+            self.play_step(0)
             if i % self.steps_to_train == 0:
 
                 if self.epsilon > 0.1:
@@ -149,8 +154,23 @@ class DQN(LightningModule):
                 tuples = self.memory.sample(32 * self.steps_to_train)
                 # print("TUPLES", tuples)
                 for t in tuples:
-                    (first_observation, reward, is_done, second_observation) = t
-                    yield (self.prepare_for_batch(first_observation), reward, is_done, self.prepare_for_batch(second_observation))
+                    (first_observation, reward, action, is_done, second_observation) = t
+                    yield (self.prepare_for_batch(first_observation), reward, action, is_done, self.prepare_for_batch(second_observation))
+
+    def train_batch(self):
+        i = 0
+        while(i < self.epoch_length):
+            i+= 1
+            self.play_step(self.epsilon)
+            if i % self.steps_to_train == 0:
+
+                if self.epsilon > 0.1:
+                    self.epsilon -= 0.000009
+                tuples = self.memory.sample(32 * self.steps_to_train)
+                # print("TUPLES", tuples)
+                for t in tuples:
+                    (first_observation, reward, action, is_done, second_observation) = t
+                    yield (self.prepare_for_batch(first_observation), reward, action, is_done, self.prepare_for_batch(second_observation))
 
     def training_epoch_end(self, outputs):
         if self.games != 0:
@@ -160,15 +180,22 @@ class DQN(LightningModule):
         self.games = 0
         self.reward = 0
 
+    def test_dataloader(self):
+        return self.dataloader(self.test_batch, 32 * self.steps_to_train)
+
     def train_dataloader(self):
-        self.dataset = ExperienceSourceDataset(self.train_batch)
+        return self.dataloader(self.train_batch, 10000)
+
+    def dataloader(self, batch_iterator, pre_steps):
+        self.dataset = ExperienceSourceDataset(batch_iterator)
         self.memory = Memory(1000000)
-        for i in range(10000):
-            self.play_step()
+        for i in range(pre_steps):
+            self.play_step(self.epsilon)
 
         return DataLoader(dataset=self.dataset, batch_size=32 * self.steps_to_train)
 
-lightning_module = DQN()#.load_from_checkpoint("./lightning_logs/version_152/checkpoints/epoch=1-step=77948.ckpt")
+lightning_module = DQN().load_from_checkpoint("./final.ckpt")
 trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=40, auto_lr_find=True)
 #trainer.tune(lightning_module)
-trainer.fit(lightning_module)
+#trainer.fit(lightning_module)
+trainer.test(lightning_module)
