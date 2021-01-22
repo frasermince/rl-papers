@@ -41,7 +41,7 @@ class Memory:
         return total / self.length
 
 class StandardGameNet(nn.Module):
-    def __init__(self, action_count):
+    def __init__(self, action_count, use_gpus):
         super().__init__()
         #print("ACTION COUNT", action_count)
         self.use_gpus = use_gpus
@@ -140,11 +140,19 @@ class DQN(LightningModule):
         (observation, reward, actions, is_done, next_observation) = data
         with torch.no_grad():
             if self.variant == "standard":
-                predicted_reward, action = torch.max(self(next_observation, self.target_network), 1)
+                value_result = self(next_observation, self.target_network)
+                print("VALUE RESULT", value_result)
+                predicted_reward, action = torch.max(value_result, 1)
+                print("ACTIONS", action)
+                print("PREDICTED REWARD", predicted_reward)
                 predicted_reward = predicted_reward.detach()
             else:
-                _, next_actions = torch.max(self(next_observation, self.network), 1).unsqueeze(-1)
+                value_result = self(next_observation, self.network)
+                print("VALUE RESULT", value_result)
+                next_actions = torch.max(value_result, 1)[1].unsqueeze(-1)
+                print("NEXT ACTIONS", next_actions)
                 predicted_reward = self(next_observation, self.target_network).gather(1, next_actions).squeeze(-1)
+                print("PREDICTED REWARD", predicted_reward)
                 predicted_reward = predicted_reward.detach()
         yj = reward + ((1 - is_done.long()) * (self.discount_factor * predicted_reward))
         current_predicted_reward = self(observation, self.network).gather(1, actions.unsqueeze(-1)).squeeze(-1)
@@ -245,7 +253,7 @@ class DQN(LightningModule):
         return DataLoader(dataset=self.dataset, batch_size=32 * self.steps_to_train)
 # standard, dueling, or double
 use_gpus = False
-lightning_module = DQN("dueling", use_gpus)#.load_from_checkpoint("./final.ckpt")
+lightning_module = DQN("standard", use_gpus)#.load_from_checkpoint("./final.ckpt")
 if use_gpus:
     trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=40, gpus=1)
 else:
