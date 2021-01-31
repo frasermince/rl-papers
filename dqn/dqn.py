@@ -10,17 +10,7 @@ from pl_bolts.datamodules.experience_source import Experience, ExperienceSourceD
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import LearningRateMonitor
 import time
-# env = gym.make("Pong-v0")
-# observation = env.reset()
-# for _ in range(10000):
-#   env.render()
-#   action = env.action_space.sample() # your agent here (this takes random actions)
-#   observation, reward, done, info = env.step(action)
 
-#   if done:
-#     observation = env.reset()
-# env.close()
-#torch.set_printoptions(profile="full")
 class Memory:
     def __init__(self, length):
         self.length = length
@@ -41,7 +31,7 @@ class Memory:
         return total / self.length
 
 class StandardGameNet(nn.Module):
-    def __init__(self, action_count):
+    def __init__(self, action_count, use_gpus):
         super().__init__()
         #print("ACTION COUNT", action_count)
         self.use_gpus = use_gpus
@@ -103,7 +93,7 @@ class DuelingGameNet(nn.Module):
         return value + (advantage - advantage.mean(dim=1, keepdim=True))
 
 class DQN(LightningModule):
-    def __init__(self, variant, use_gpus, learning_rate= 1e-4):
+    def __init__(self, variant="dueling", use_gpus=False, learning_rate= 0.00025):
         super().__init__()
         self.env = gym.make("Pong-v0")
         self.env = wrappers.FrameStack(wrappers.ResizeObservation(wrappers.GrayScaleObservation(self.env), 84), 4)
@@ -126,7 +116,7 @@ class DQN(LightningModule):
         return net(observation).to(dtype=torch.float64)
 
     def test_step(self, batch, x):
-        #time.sleep(.04)
+        time.sleep(.05)
         return batch
 
     def training_step(self, data, batch_idx):
@@ -140,11 +130,14 @@ class DQN(LightningModule):
         (observation, reward, actions, is_done, next_observation) = data
         with torch.no_grad():
             if self.variant == "standard":
-                predicted_reward, action = torch.max(self(next_observation, self.target_network), 1)
+                value_result = self(next_observation, self.target_network)
+                predicted_reward, action = torch.max(value_result, 1)
                 predicted_reward = predicted_reward.detach()
             else:
-                _, next_actions = torch.max(self(next_observation, self.network), 1).unsqueeze(-1)
-                predicted_reward = self(next_observation, self.target_network).gather(1, next_actions).squeeze(-1)
+                value_result = self(next_observation, self.network)
+                value_actions = torch.max(value_result, 1)[1].unsqueeze(-1)
+                target_result = self(next_observation, self.target_network)
+                predicted_reward = target_result.gather(1, value_actions).squeeze(-1)
                 predicted_reward = predicted_reward.detach()
         yj = reward + ((1 - is_done.long()) * (self.discount_factor * predicted_reward))
         current_predicted_reward = self(observation, self.network).gather(1, actions.unsqueeze(-1)).squeeze(-1)
@@ -238,18 +231,20 @@ class DQN(LightningModule):
 
     def dataloader(self, batch_iterator, pre_steps):
         self.dataset = ExperienceSourceDataset(batch_iterator)
-        self.memory = Memory(1000000)
+        self.memory = Memory(500000)
         for i in range(pre_steps):
             self.play_step(self.epsilon)
 
         return DataLoader(dataset=self.dataset, batch_size=32 * self.steps_to_train)
 # standard, dueling, or double
 use_gpus = False
-lightning_module = DQN("dueling", use_gpus)#.load_from_checkpoint("./final.ckpt")
+lightning_module = DQN("dueling", use_gpus)
+lightning_module = lightning_module.load_from_checkpoint("./dueling.ckpt")
 if use_gpus:
     trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=40, gpus=1)
 else:
     trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=40)
 #trainer.tune(lightning_module)
-trainer.fit(lightning_module)
-# trainer.test(lightning_module)
+#trainer.fit(lightning_module)
+#trainer.save_checkpoint("final.ckpt")
+trainer.test(lightning_module)
