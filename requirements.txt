@@ -3,3 +3,4 @@ torch
 pytorch_lightning
 numpy
 lightning-bolts
+tensorboard
