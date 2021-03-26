@@ -3,15 +3,15 @@ stages:
     
 cml:
     stage: cml_run
-    image: dvcorg/cml-py3:latest
+    image: frasermince/gym:latest
     script:
         - pip install -r requirements.txt
+        - ls
         - cml-tensorboard-dev \
-            --logdir lightning_logs \
+            --logdir ./lightning_logs/ \
             --name "Go to tensorboard" \
             --md >> report.md
         - cml-send-comment report.md
 
-        - python dqn/dqn.py train 1 0
-
-
+        - python dqn/dqn.py train 1 1000 200 true
+        - ls
