@@ -5,8 +5,9 @@
 # import torch
 # import torch.nn.functional as F
 
-from pytorch_lightning import Trainer, LightningModule
-# import random
+# from pytorch_lightning import Trainer, LightningModule
+
+import random
 # import numpy as np
 
 # from pl_bolts.datamodules.experience_source import Experience, ExperienceSourceDataset
