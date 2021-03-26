@@ -245,10 +245,17 @@ if len(sys.argv) > 2:
 else:
     epochs = 40
 
-if use_gpus:
-    trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=epochs, gpus=1)
+if len(sys.argv) > 3:
+    refresh_rate = int(sys.argv[3])
 else:
-    trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=epochs)
+    refresh_rate = 50
+
+
+
+if use_gpus:
+    trainer = Trainer(progress_bar_refresh_rate=refresh_rate, max_epochs=epochs, gpus=1)
+else:
+    trainer = Trainer(progress_bar_refresh_rate=refresh_rate, max_epochs=epochs)
 stage = sys.argv[1]
 if stage == "train":
     trainer.fit(lightning_module)

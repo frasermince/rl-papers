@@ -12,6 +12,6 @@ cml:
             --md >> report.md
         - cml-send-comment report.md
 
-        - python dqn/dqn.py train 1
+        - python dqn/dqn.py train 1 0
 
 
