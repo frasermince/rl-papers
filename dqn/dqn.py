@@ -96,7 +96,9 @@ class DuelingGameNet(nn.Module):
 class DQN(LightningModule):
     def __init__(self, variant="dueling", use_gpus=False, learning_rate= 0.00025):
         super().__init__()
+        print("MAKE PONG")
         self.env = gym.make("Pong-v0")
+        print("AFTER MAKE PONG")
         self.env = wrappers.FrameStack(wrappers.ResizeObservation(wrappers.GrayScaleObservation(self.env), 84), 4)
         self.observation = self.env.reset()
         self.epsilon = 1
