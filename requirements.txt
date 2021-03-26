@@ -2,7 +2,6 @@ gym
 torch
 pytorch_lightning
 numpy
-random
 lightning-bolts
 tensorboard
 gym[atari]
