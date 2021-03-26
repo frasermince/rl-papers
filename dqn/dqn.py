@@ -12,6 +12,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor
 import sys
 import time
 
+print("START START")
 class Memory:
     def __init__(self, length):
         self.length = length
