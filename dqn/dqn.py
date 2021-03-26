@@ -3,7 +3,7 @@ import gym.wrappers as wrappers
 
 import torch.nn as nn
 import torch
-import torch.nn.functional as F
+# import torch.nn.functional as F
 
 # from pytorch_lightning import Trainer, LightningModule
 
