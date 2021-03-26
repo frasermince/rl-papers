@@ -7,7 +7,7 @@ cml:
     script:
         - pip install -r requirements.txt
         - cml-tensorboard-dev \
-            --logdir logs \
+            --logdir lightning_logs \
             --name "Go to tensorboard" \
             --md >> report.md
         - cml-send-comment report.md
