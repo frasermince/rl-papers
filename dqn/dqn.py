@@ -9,6 +9,7 @@ import numpy as np
 from pl_bolts.datamodules.experience_source import Experience, ExperienceSourceDataset
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import LearningRateMonitor
+import sys
 import time
 
 class Memory:
@@ -239,12 +240,19 @@ class DQN(LightningModule):
 # standard, dueling, or double
 use_gpus = False
 lightning_module = DQN("dueling", use_gpus)
-lightning_module = lightning_module.load_from_checkpoint("./dueling.ckpt")
-if use_gpus:
-    trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=40, gpus=1)
+if len(sys.argv) > 2:
+    epochs = int(sys.argv[2])
 else:
-    trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=40)
-#trainer.tune(lightning_module)
-#trainer.fit(lightning_module)
-#trainer.save_checkpoint("final.ckpt")
-trainer.test(lightning_module)
+    epochs = 40
+
+if use_gpus:
+    trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=epochs, gpus=1)
+else:
+    trainer = Trainer(progress_bar_refresh_rate=50, max_epochs=epochs)
+stage = sys.argv[1]
+if stage == "train":
+    trainer.fit(lightning_module)
+    trainer.save_checkpoint("final.ckpt")
+elif stage == "test":
+    lightning_module = lightning_module.load_from_checkpoint("./dqn/dueling.ckpt")
+    trainer.test(lightning_module)
