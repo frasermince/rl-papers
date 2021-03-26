@@ -13,5 +13,3 @@ cml:
         - cml-send-comment report.md
 
         - python dqn/dqn.py train 1 0
-
-

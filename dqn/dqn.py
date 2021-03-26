@@ -121,6 +121,7 @@ class DQN(LightningModule):
         return batch
 
     def training_step(self, data, batch_idx):
+        print("TRAIN")
         self.log("reward", self.reward, prog_bar=True, on_step=True)
         self.log("games", self.games, prog_bar=True, on_step=True)
         self.log("epsilon", self.epsilon, prog_bar=True, on_step=True)
@@ -154,6 +155,7 @@ class DQN(LightningModule):
 
 
     def play_step(self, epsilon):
+        print("PLAY")
         self.env.render()
         first_observation = torch.tensor(self.observation.__array__(np.float32))
         first_observation = first_observation.permute(3, 0, 1, 2)
