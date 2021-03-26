@@ -7,8 +7,8 @@
 
 # from pytorch_lightning import Trainer, LightningModule
 
-import random
-# import numpy as np
+# import random
+import numpy as np
 
 # from pl_bolts.datamodules.experience_source import Experience, ExperienceSourceDataset
 # from torch.utils.data import DataLoader
