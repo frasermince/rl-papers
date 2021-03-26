@@ -243,6 +243,7 @@ class DQN(LightningModule):
 
         return DataLoader(dataset=self.dataset, batch_size=32 * self.steps_to_train)
 # standard, dueling, or double
+print("START")
 use_gpus = False
 lightning_module = DQN("dueling", use_gpus)
 if len(sys.argv) > 2:
