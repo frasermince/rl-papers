@@ -1,0 +1,5 @@
+gym
+torch
+pytorch_lightning
+numpy
+pl_bolts

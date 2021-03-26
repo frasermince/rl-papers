@@ -1,0 +1,17 @@
+stages: 
+    - cml_run
+    
+cml:
+    stage: cml_run
+    image: dvcorg/cml-py3:latest
+    script:
+        - pip install -r requirements.txt
+        - cml-tensorboard-dev \
+            --logdir logs \
+            --name "Go to tensorboard" \
+            --md >> report.md
+        - cml-send-comment report.md
+
+        - python train.py
+
+
