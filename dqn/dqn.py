@@ -10,6 +10,7 @@ from pl_bolts.datamodules.experience_source import Experience, ExperienceSourceD
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import LearningRateMonitor
 import sys
+from pyvirtualdisplay import Display
 import time
 
 class Memory:
@@ -94,11 +95,17 @@ class DuelingGameNet(nn.Module):
         return value + (advantage - advantage.mean(dim=1, keepdim=True))
 
 class DQN(LightningModule):
-    def __init__(self, variant="dueling", use_gpus=False, learning_rate= 0.00025):
+    def __init__(self, variant="dueling", use_gpus=False, learning_rate= 0.00025, headless=False):
         super().__init__()
         #self.env = gym.make("Pong-v0")
+        self.headless = headless
         self.env = gym.make("Pong-v0")
         self.env = wrappers.FrameStack(wrappers.ResizeObservation(wrappers.GrayScaleObservation(self.env), 84), 4)
+        if self.headless:
+            self.virtual_display = Display(visible=0, size=(1400, 900))
+            self.virtual_display.start()
+            self.env = wrappers.Monitor(self.env, "/tmp/Pong-v0")
+
         self.observation = self.env.reset()
         self.epsilon = 1
         self.discount_factor = 0.99
@@ -240,7 +247,6 @@ class DQN(LightningModule):
         return DataLoader(dataset=self.dataset, batch_size=32 * self.steps_to_train)
 # standard, dueling, or double
 use_gpus = False
-lightning_module = DQN("dueling", use_gpus)
 if len(sys.argv) > 2:
     epochs = int(sys.argv[2])
 else:
@@ -251,8 +257,13 @@ if len(sys.argv) > 3:
 else:
     refresh_rate = 50
 
+if len(sys.argv) > 4 and sys.argv[4] == "true":
+    headless = True
+else:
+    headless = False
 
 
+lightning_module = DQN("dueling", use_gpus, headless=headless)
 if use_gpus:
     trainer = Trainer(progress_bar_refresh_rate=refresh_rate, max_epochs=epochs, gpus=1)
 else:

@@ -5,3 +5,7 @@ numpy
 lightning-bolts
 tensorboard
 gym[atari]
+pyvirtualdisplay
+wandb
+torchvision
+sklearn
