@@ -3,7 +3,7 @@ stages:
     
 cml:
     stage: cml_run
-    image: dvcorg/cml-py3:latest
+    image: frasermince/gym:latest
     script:
         - pip install -r requirements.txt
         - cml-tensorboard-dev \
