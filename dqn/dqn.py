@@ -1,14 +1,11 @@
 import gym
 import gym.wrappers as wrappers
-
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from pytorch_lightning import Trainer, LightningModule
-
 import random
 import numpy as np
-
 from pl_bolts.datamodules.experience_source import Experience, ExperienceSourceDataset
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import LearningRateMonitor
