@@ -95,17 +95,18 @@ class DuelingGameNet(nn.Module):
         return value + (advantage - advantage.mean(dim=1, keepdim=True))
 
 class DQN(LightningModule):
-    def __init__(self, variant="dueling", use_gpus=False, learning_rate= 0.00025, headless=False):
+    def __init__(self, variant="dueling", use_gpus=False, learning_rate= 0.00025, headless=False, epoch_length=50000):
         super().__init__()
         #self.env = gym.make("Pong-v0")
         self.headless = headless
         self.env = gym.make("Pong-v0")
         self.env = wrappers.FrameStack(wrappers.ResizeObservation(wrappers.GrayScaleObservation(self.env), 84), 4)
+
         if self.headless:
             self.virtual_display = Display(visible=0, size=(1400, 900))
             self.virtual_display.start()
-            self.env = wrappers.Monitor(self.env, "/tmp/Pong-v0")
 
+        self.env = wrappers.Monitor(self.env, "./video/Pong-v0", video_callable=lambda episode_id: True,force=True)
         self.observation = self.env.reset()
         self.epsilon = 1
         self.discount_factor = 0.99
@@ -115,7 +116,7 @@ class DQN(LightningModule):
         self.reward = 0
         self.game_reward = 0
         self.games = 0
-        self.epoch_length = 50000
+        self.epoch_length = epoch_length
         self.learning_rate = learning_rate
         self.steps_to_train = 4
         self.last_ten = Memory(10)
@@ -124,9 +125,13 @@ class DQN(LightningModule):
     def forward(self, observation, net):
         return net(observation).to(dtype=torch.float64)
 
-    def test_step(self, batch, x):
-        time.sleep(.05)
-        return batch
+    def test_step(self, data, x):
+        self.log("reward", self.reward, prog_bar=True, on_step=True)
+        self.log("games", self.games, prog_bar=True, on_step=True)
+        self.log("lr", self.learning_rate, prog_bar=True, on_step=True)
+        self.log("game_reward", self.game_reward, prog_bar=True, on_step=True)
+        self.log("last_ten_reward", self.last_ten.average(), prog_bar=True, on_step=True)
+        #(observation, reward, actions, is_done, next_observation) = data
 
     def training_step(self, data, batch_idx):
         self.log("reward", self.reward, prog_bar=True, on_step=True)
@@ -223,14 +228,19 @@ class DQN(LightningModule):
                 for t in tuples:
                     (first_observation, reward, action, is_done, second_observation) = t
                     yield (self.prepare_for_batch(first_observation), reward, action, is_done, self.prepare_for_batch(second_observation))
-
-    def training_epoch_end(self, outputs):
+    def epoch_end(self, outputs):
         if self.games != 0:
             self.logger.experiment.add_scalar("average_game_reward", self.reward / self.games, self.current_epoch)
         self.logger.experiment.add_scalar("total_game_reward", self.reward, self.current_epoch)
         self.logger.experiment.add_scalar("game_count", self.games, self.current_epoch)
         self.games = 0
         self.reward = 0
+
+    def training_epoch_end(self, outputs):
+        self.epoch_end(outputs)
+
+    def test_epoch_end(self, outputs):
+        self.epoch_end(outputs)
 
     def test_dataloader(self):
         return self.dataloader(self.test_batch, 32 * self.steps_to_train)
@@ -253,17 +263,26 @@ else:
     epochs = 40
 
 if len(sys.argv) > 3:
-    refresh_rate = int(sys.argv[3])
+    epoch_length = int(sys.argv[3])
 else:
-    refresh_rate = 50
+    headless = 50000
 
 if len(sys.argv) > 4 and sys.argv[4] == "true":
     headless = True
 else:
     headless = False
 
+if len(sys.argv) > 4:
+    refresh_rate = int(sys.argv[4])
+else:
+    refresh_rate = 50
 
-lightning_module = DQN("dueling", use_gpus, headless=headless)
+if len(sys.argv) > 5 and sys.argv[5] == "true":
+    headless = True
+else:
+    headless = False
+
+lightning_module = DQN("dueling", use_gpus, headless=headless, epoch_length=epoch_length)
 if use_gpus:
     trainer = Trainer(progress_bar_refresh_rate=refresh_rate, max_epochs=epochs, gpus=1)
 else:
@@ -273,5 +292,5 @@ if stage == "train":
     trainer.fit(lightning_module)
     trainer.save_checkpoint("final.ckpt")
 elif stage == "test":
-    lightning_module = lightning_module.load_from_checkpoint("./dqn/dueling.ckpt")
+    lightning_module = lightning_module.load_from_checkpoint("./data/dueling.ckpt")
     trainer.test(lightning_module)
