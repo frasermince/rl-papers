@@ -265,7 +265,7 @@ else:
 if len(sys.argv) > 3:
     epoch_length = int(sys.argv[3])
 else:
-    headless = 50000
+    epoch_length = 50000
 
 if len(sys.argv) > 4 and sys.argv[4] == "true":
     headless = True
@@ -287,7 +287,7 @@ if use_gpus:
     trainer = Trainer(progress_bar_refresh_rate=refresh_rate, max_epochs=epochs, gpus=1)
 else:
     trainer = Trainer(progress_bar_refresh_rate=refresh_rate, max_epochs=epochs)
-stage = sys.argv[1]
+stage = sys.argv[1] if len(sys.argv) > 1 else "train"
 if stage == "train":
     trainer.fit(lightning_module)
     trainer.save_checkpoint("final.ckpt")
