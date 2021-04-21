@@ -47,8 +47,6 @@ class A2CNetCartPole(nn.Module):
             nn.Linear(64, 512),
             nn.ReLU(),
             nn.Linear(512, action_count),
-            nn.ReLU(),
-            nn.Softmax()
         )
         self.value = nn.Sequential(
             nn.Linear(64, 512),
@@ -64,7 +62,7 @@ class A2CNetCartPole(nn.Module):
         x = self.entry(x)
         value = self.value(x)
         policy = self.policy(x)
-        return (policy, value)
+        return (Categorical(logits=policy), value)
 
 class A2CNet(nn.Module):
     def __init__(self, action_count, use_gpus):
@@ -82,8 +80,6 @@ class A2CNet(nn.Module):
             nn.Linear(64 * 7 * 7, 512),
             nn.ReLU(),
             nn.Linear(512, action_count),
-            nn.ReLU(),
-            nn.Softmax()
         )
         self.value = nn.Sequential(
             nn.Linear(64 * 7 * 7, 512),
@@ -99,7 +95,7 @@ class A2CNet(nn.Module):
         x = x.view(-1, 64 * 7 * 7)
         value = self.value(x)
         policy = self.policy(x)
-        return (policy, value)
+        return (Categorical(logits=policy), value)
 
 
 class A2C(LightningModule):
@@ -123,7 +119,7 @@ class A2C(LightningModule):
 
     def forward(self, observation, net):
         policy, value = net(observation)
-        return policy.to(dtype=torch.float64), value.to(dtype=torch.float64)
+        return policy, value.to(dtype=torch.float64)
 
     def test_step(self, batch, x):
         time.sleep(.05)
@@ -140,17 +136,19 @@ class A2C(LightningModule):
                  prog_bar=True, on_step=True)
 
         (q_vals, observations) = data
-
         policy, values = self(observations.squeeze(), self.network)
-        log_probs = torch.log(policy)
+        print("POLICY", policy)
+        import ipdb; ipdb.set_trace()
+        # print("value", values)
+        log_probs = policy.log_prob()
         advantages = q_vals.detach() - values.squeeze()
         critic_loss = 0.5 * advantages.pow(2).mean()
-        actor_loss = (advantages.detach() @ -log_probs).mean()
+        actor_loss = (-log_probs.permute(1, 0) * advantages.detach()).mean()
         # distribution = Categorical(policy)
         # entropy = distribution.entropy().mean()
 
         # loss = -log π( a | s) * (monte_carlo + bootstrap - predicted_value) + TD(monte_carlo + boostrap,  predicted_value)
-        loss = actor_loss + critic_loss + self.entropy_scaling * self.entropy
+        loss = actor_loss + critic_loss - self.entropy_scaling * self.entropy
         return loss
 
     def configure_optimizers(self):
@@ -173,10 +171,10 @@ class A2C(LightningModule):
                 # first_observation = first_observation.permute(3, 0, 1, 2)
 
                 policy, value = self(first_observation, self.network)
-
-                distribution = Categorical(policy)
-                sampled_action = distribution.sample()
-                self.entropy += distribution.entropy().mean()
+                sampled_action = policy.sample()
+                # print("POLICY", policy)
+                # print("ENTROPY", distribution.entropy())
+                self.entropy += policy.entropy().mean()
                 second_observation, reward, is_done, info = self.env.step(sampled_action.item())
 
                 if is_done:

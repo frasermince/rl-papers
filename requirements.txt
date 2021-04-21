@@ -8,3 +8,4 @@ pyvirtualdisplay
 wandb
 torchvision
 sklearn
+ipdb
