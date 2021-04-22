@@ -99,7 +99,7 @@ class A2CNet(nn.Module):
 
 
 class A2C(LightningModule):
-    def __init__(self, use_gpus=False, learning_rate=0.001, n_steps=128):
+    def __init__(self, use_gpus=False, learning_rate=0.0001, n_steps=128):
         super().__init__()
         self.env = gym.make("CartPole-v1")
         # self.env = wrappers.FrameStack(wrappers.ResizeObservation(
@@ -115,7 +115,7 @@ class A2C(LightningModule):
         self.epoch_length = 50000
         self.learning_rate = learning_rate
         self.last_ten = Memory(10)
-        self.entropy_scaling = 0.01
+        self.entropy_scaling = 0.02
 
     def forward(self, observation, net):
         policy, value = net(observation)
@@ -126,29 +126,25 @@ class A2C(LightningModule):
         return batch
 
     def training_step(self, data, batch_idx):
-        # advantages, log_probs, entropy
         self.log("entropy", self.entropy, prog_bar=True, on_step=True)
-        self.log("reward", self.reward, prog_bar=True, on_step=True)
-        self.log("games", self.games, prog_bar=True, on_step=True)
+        # self.log("games", self.games, prog_bar=True, on_step=True)
         self.log("lr", self.learning_rate, prog_bar=True, on_step=True)
         self.log("game_reward", self.game_reward, prog_bar=True, on_step=True)
         self.log("last_ten_reward", self.last_ten.average(),
                  prog_bar=True, on_step=True)
 
-        (q_vals, observations) = data
+        q_vals, observations, actions = data
         policy, values = self(observations.squeeze(), self.network)
-        print("POLICY", policy)
-        import ipdb; ipdb.set_trace()
-        # print("value", values)
-        log_probs = policy.log_prob()
+        log_probs = policy.log_prob(actions)
         advantages = q_vals.detach() - values.squeeze()
-        critic_loss = 0.5 * advantages.pow(2).mean()
-        actor_loss = (-log_probs.permute(1, 0) * advantages.detach()).mean()
-        # distribution = Categorical(policy)
-        # entropy = distribution.entropy().mean()
+        critic_loss = advantages.pow(2).mean()
+        actor_loss = (-log_probs * advantages.detach()).mean()
 
-        # loss = -log π( a | s) * (monte_carlo + bootstrap - predicted_value) + TD(monte_carlo + boostrap,  predicted_value)
         loss = actor_loss + critic_loss - self.entropy_scaling * self.entropy
+        self.log("actor_loss", actor_loss, prog_bar=True, on_step=True)
+        self.log("critic_loss", critic_loss, prog_bar=True, on_step=True)
+        self.log("entropy_coff", self.entropy_scaling * self.entropy, prog_bar=True, on_step=True)
+
         return loss
 
     def configure_optimizers(self):
@@ -160,6 +156,7 @@ class A2C(LightningModule):
         i = 0
         qval_for_bootstrap = None
         rewards = []
+        actions = []
         observations = []
         done_indices = []
         self.entropy = 0
@@ -169,11 +166,11 @@ class A2C(LightningModule):
                 first_observation = self.observation.__array__(np.float32)
                 first_observation = torch.tensor(first_observation)
                 # first_observation = first_observation.permute(3, 0, 1, 2)
+                observations.append(first_observation)
 
                 policy, value = self(first_observation, self.network)
                 sampled_action = policy.sample()
-                # print("POLICY", policy)
-                # print("ENTROPY", distribution.entropy())
+                actions.append(sampled_action)
                 self.entropy += policy.entropy().mean()
                 second_observation, reward, is_done, info = self.env.step(sampled_action.item())
 
@@ -192,7 +189,6 @@ class A2C(LightningModule):
                 else:
                     self.reward += reward
                     rewards.append(reward)
-                    observations.append(first_observation)
 
                     if reward > 0:
                         self.game_reward += reward
@@ -200,16 +196,15 @@ class A2C(LightningModule):
                     self.observation = second_observation
                     i += 1
 
-            q_vals = torch.zeros(len(rewards))
-
+            q_vals = torch.zeros(len(rewards) + 1)
+            q_vals[-1] = qval_for_bootstrap
             for i in reversed(range(len(rewards))):
                 if i in done_indices:
-                    qval_for_bootstrap = 0
+                    q_vals[i] = 0
                 else:
-                    qval_for_bootstrap = rewards[i] + self.discount_factor * qval_for_bootstrap
-                q_vals[i] = qval_for_bootstrap
+                    q_vals[i] = rewards[i] + self.discount_factor * q_vals[i + 1]
 
-        return (q_vals.detach(), observations)
+        return (q_vals.detach(), observations, actions)
 
     def prepare_for_batch(self, observation):
         observation = torch.tensor(observation.__array__(np.float32))
@@ -218,9 +213,9 @@ class A2C(LightningModule):
 
     def iterate_batch(self):
         for i in range(int(self.epoch_length)):
-            (q_vals, observations) = self.monte_carlo_play_step()
+            (q_vals, observations, actions) = self.monte_carlo_play_step()
             for j in range(len(q_vals)):
-                yield (q_vals[j], observations[j])
+                yield (q_vals[j], observations[j], actions[j])
 
     def training_epoch_end(self, outputs):
         if self.games != 0:
