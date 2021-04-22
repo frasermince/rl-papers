@@ -99,7 +99,7 @@ class A2CNet(nn.Module):
 
 
 class A2C(LightningModule):
-    def __init__(self, use_gpus=False, learning_rate=0.001, n_steps=128):
+    def __init__(self, use_gpus=False, learning_rate=0.001, n_steps=8):
         super().__init__()
         self.env = gym.make("Pong-v4")
         self.env = wrappers.FrameStack(wrappers.ResizeObservation(
@@ -242,11 +242,11 @@ class A2C(LightningModule):
 
 # standard, dueling, or double
 use_gpus = False
-lightning_module = A2C(use_gpus, n_steps=256)
+lightning_module = A2C(use_gpus, n_steps=5)
 if use_gpus:
-    trainer = Trainer(progress_bar_refresh_rate=1, max_epochs=40, gpus=1)
+    trainer = Trainer(progress_bar_refresh_rate=20, max_epochs=40, gpus=1)
 else:
-    trainer = Trainer(progress_bar_refresh_rate=1, max_epochs=40)
+    trainer = Trainer(progress_bar_refresh_rate=20, max_epochs=40)
 # trainer.tune(lightning_module)
 trainer.fit(lightning_module)
 trainer.save_checkpoint("a2c.ckpt")
