@@ -99,23 +99,23 @@ class A2CNet(nn.Module):
 
 
 class A2C(LightningModule):
-    def __init__(self, use_gpus=False, learning_rate=0.0001, n_steps=128):
+    def __init__(self, use_gpus=False, learning_rate=0.001, n_steps=128):
         super().__init__()
-        self.env = gym.make("CartPole-v1")
-        # self.env = wrappers.FrameStack(wrappers.ResizeObservation(
-            # wrappers.GrayScaleObservation(self.env), 84), 4)
+        self.env = gym.make("Pong-v4")
+        self.env = wrappers.FrameStack(wrappers.ResizeObservation(
+            wrappers.GrayScaleObservation(self.env), 84), 4)
         self.n_steps = n_steps
         self.observation = self.env.reset()
         self.discount_factor = 0.99
         self.action_count = self.env.action_space.n
-        self.network = A2CNetCartPole(self.action_count, use_gpus)
+        self.network = A2CNet(self.action_count, use_gpus)
         self.reward = 0
         self.game_reward = 0
         self.games = 0
         self.epoch_length = 50000
         self.learning_rate = learning_rate
         self.last_ten = Memory(10)
-        self.entropy_scaling = 0.02
+        self.entropy_scaling = 0.01
 
     def forward(self, observation, net):
         policy, value = net(observation)
@@ -159,13 +159,14 @@ class A2C(LightningModule):
         actions = []
         observations = []
         done_indices = []
+        in_progress_mask = torch.ones(self.n_steps + 1)
         self.entropy = 0
         with torch.no_grad():
             while(True):
                 self.env.render()
                 first_observation = self.observation.__array__(np.float32)
                 first_observation = torch.tensor(first_observation)
-                # first_observation = first_observation.permute(3, 0, 1, 2)
+                first_observation = first_observation.permute(3, 0, 1, 2)
                 observations.append(first_observation)
 
                 policy, value = self(first_observation, self.network)
@@ -182,6 +183,7 @@ class A2C(LightningModule):
                     self.game_reward = 0
                     self.games += 1
                     done_indices.append(i)
+                    in_progress_mask[i] = 0
 
                 if i == self.n_steps:
                     qval_for_bootstrap = value
@@ -199,16 +201,13 @@ class A2C(LightningModule):
             q_vals = torch.zeros(len(rewards) + 1)
             q_vals[-1] = qval_for_bootstrap
             for i in reversed(range(len(rewards))):
-                if i in done_indices:
-                    q_vals[i] = 0
-                else:
-                    q_vals[i] = rewards[i] + self.discount_factor * q_vals[i + 1]
+                q_vals[i] = rewards[i] + in_progress_mask[i + 1] * self.discount_factor * q_vals[i + 1]
 
         return (q_vals.detach(), observations, actions)
 
     def prepare_for_batch(self, observation):
         observation = torch.tensor(observation.__array__(np.float32))
-        # observation = observation.permute(3, 0, 1, 2)
+        observation = observation.permute(3, 0, 1, 2)
         return torch.squeeze(observation)
 
     def iterate_batch(self):
