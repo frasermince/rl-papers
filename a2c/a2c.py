@@ -2,13 +2,11 @@ import gym
 import gym.wrappers as wrappers
 import torch.nn as nn
 import torch
-import torch.nn.functional as F
 from pytorch_lightning import Trainer, LightningModule
 import random
 import numpy as np
-from pl_bolts.datamodules.experience_source import Experience, ExperienceSourceDataset
+from pl_bolts.datamodules.experience_source import ExperienceSourceDataset
 from torch.utils.data import DataLoader
-from pytorch_lightning.callbacks import LearningRateMonitor
 import time
 from torch.distributions import Categorical
 
@@ -47,6 +45,7 @@ class A2CNetCartPole(nn.Module):
             nn.Linear(64, 512),
             nn.ReLU(),
             nn.Linear(512, action_count),
+            nn.Softmax(),
         )
         self.value = nn.Sequential(
             nn.Linear(64, 512),
@@ -62,7 +61,7 @@ class A2CNetCartPole(nn.Module):
         x = self.entry(x)
         value = self.value(x)
         policy = self.policy(x)
-        return (Categorical(logits=policy), value)
+        return (Categorical(policy), value)
 
 class A2CNet(nn.Module):
     def __init__(self, action_count, use_gpus):
@@ -80,6 +79,7 @@ class A2CNet(nn.Module):
             nn.Linear(64 * 7 * 7, 512),
             nn.ReLU(),
             nn.Linear(512, action_count),
+            nn.Softmax(),
         )
         self.value = nn.Sequential(
             nn.Linear(64 * 7 * 7, 512),
@@ -95,26 +95,27 @@ class A2CNet(nn.Module):
         x = x.view(-1, 64 * 7 * 7)
         value = self.value(x)
         policy = self.policy(x)
-        return (Categorical(logits=policy), value)
+        return (Categorical(policy), value)
 
 
 class A2C(LightningModule):
-    def __init__(self, use_gpus=False, learning_rate=0.001, n_steps=8):
+    def __init__(self, use_gpus=False, learning_rate=0.0001, n_steps=8):
         super().__init__()
-        self.env = gym.make("Pong-v4")
-        self.env = wrappers.FrameStack(wrappers.ResizeObservation(
-            wrappers.GrayScaleObservation(self.env), 84), 4)
+        self.env = gym.make("CartPole-v1")
+        # self.env = wrappers.FrameStack(wrappers.ResizeObservation(
+        #     wrappers.GrayScaleObservation(self.env), 84), 4)
         self.n_steps = n_steps
         self.observation = self.env.reset()
         self.discount_factor = 0.99
         self.action_count = self.env.action_space.n
-        self.network = A2CNet(self.action_count, use_gpus)
+        self.network = A2CNetCartPole(self.action_count, use_gpus)
         self.reward = 0
         self.game_reward = 0
         self.games = 0
         self.epoch_length = 50000
         self.learning_rate = learning_rate
         self.last_ten = Memory(10)
+        self.last_hundred = Memory(100)
         self.entropy_scaling = 0.01
 
     def forward(self, observation, net):
@@ -132,12 +133,14 @@ class A2C(LightningModule):
         self.log("game_reward", self.game_reward, prog_bar=True, on_step=True)
         self.log("last_ten_reward", self.last_ten.average(),
                  prog_bar=True, on_step=True)
+        self.log("last_hundred", self.last_hundred.average(),
+                 prog_bar=True, on_step=True)
 
         q_vals, observations, actions = data
         policy, values = self(observations.squeeze(), self.network)
         log_probs = policy.log_prob(actions)
         advantages = q_vals.detach() - values.squeeze()
-        critic_loss = advantages.pow(2).mean()
+        critic_loss = 0.5 * advantages.pow(2).mean()
         actor_loss = (-log_probs * advantages.detach()).mean()
 
         loss = actor_loss + critic_loss - self.entropy_scaling * self.entropy
@@ -166,17 +169,18 @@ class A2C(LightningModule):
                 self.env.render()
                 first_observation = self.observation.__array__(np.float32)
                 first_observation = torch.tensor(first_observation)
-                first_observation = first_observation.permute(3, 0, 1, 2)
+                # first_observation = first_observation.permute(3, 0, 1, 2)
                 observations.append(first_observation)
 
                 policy, value = self(first_observation, self.network)
                 sampled_action = policy.sample()
                 actions.append(sampled_action)
                 self.entropy += policy.entropy().mean()
-                second_observation, reward, is_done, info = self.env.step(sampled_action.item())
+                second_observation, reward, is_done, _ = self.env.step(sampled_action.item())
 
                 if is_done:
                     self.last_ten.append(self.game_reward)
+                    self.last_hundred.append(self.game_reward)
                     self.logger.experiment.add_scalar(
                         "game_score", self.game_reward, self.games)
                     self.observation = self.env.reset()
@@ -207,7 +211,7 @@ class A2C(LightningModule):
 
     def prepare_for_batch(self, observation):
         observation = torch.tensor(observation.__array__(np.float32))
-        observation = observation.permute(3, 0, 1, 2)
+        # observation = observation.permute(3, 0, 1, 2)
         return torch.squeeze(observation)
 
     def iterate_batch(self):
