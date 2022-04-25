@@ -24,6 +24,9 @@ class Memory:
     def sample(self, n):
         return random.sample(self.items, n)
 
+    def items(self):
+        return self.items
+
     def average(self):
         total = 0
         for i in self.items:
@@ -57,7 +60,7 @@ class A2CNetCartPole(nn.Module):
     def forward(self, x):
         if self.use_gpus:
             x = x.cuda()
-        x = self.ln1(x)
+        # x = self.ln1(x)
         x = self.entry(x)
         value = self.value(x)
         policy = self.policy(x)
@@ -95,22 +98,39 @@ class A2CNet(nn.Module):
         x = x.view(-1, 64 * 7 * 7)
         value = self.value(x)
         policy = self.policy(x)
-        return (Categorical(policy), value)
+        policy = Categorical(policy)
+        return (policy, value)
 
 
 class A2C(LightningModule):
-    def __init__(self, use_gpus=False, learning_rate=0.0001, n_steps=8):
+    def __init__(self, use_gpus=True, learning_rate=1e-4, n_steps=5, env_name="Pong", environment_count=8):
         super().__init__()
-        self.env = gym.make("CartPole-v1")
-        # self.env = wrappers.FrameStack(wrappers.ResizeObservation(
-        #     wrappers.GrayScaleObservation(self.env), 84), 4)
+        self.environment_count = environment_count
+        self.envs = []
+        self.observations = []
+        self.game_reward = []
+        self.eps = np.finfo(np.float32).eps.item()
+        self.environment_name = env_name
+        for i in range(self.environment_count):
+          if self.environment_name == "Pong":
+            env = gym.make("Pong-v4")
+            env = wrappers.FrameStack(wrappers.ResizeObservation(
+                wrappers.GrayScaleObservation(env), 84), 4)
+          elif self.environment_name == "CartPole":
+            env = gym.make("CartPole-v1")
+
+        #   env = wrappers.Monitor(env, "~/Programming/recordings", video_callable=False ,force=True)
+          self.envs.append(env) 
+          self.observations.append(env.reset())
+          self.action_count = env.action_space.n
+          self.game_reward.append(0)
         self.n_steps = n_steps
-        self.observation = self.env.reset()
         self.discount_factor = 0.99
-        self.action_count = self.env.action_space.n
-        self.network = A2CNetCartPole(self.action_count, use_gpus)
+        if self.environment_name == "Pong":
+            self.network = A2CNet(self.action_count, False)
+        elif self.environment_name == "CartPole":
+            self.network = A2CNetCartPole(self.action_count, False)
         self.reward = 0
-        self.game_reward = 0
         self.games = 0
         self.epoch_length = 50000
         self.learning_rate = learning_rate
@@ -120,105 +140,151 @@ class A2C(LightningModule):
 
     def forward(self, observation, net):
         policy, value = net(observation)
-        return policy, value.to(dtype=torch.float64)
+        return policy, value
 
-    def test_step(self, batch, x):
-        time.sleep(.05)
-        return batch
+    def test_step(self, data, x):
+        time.sleep(0.01)
 
     def training_step(self, data, batch_idx):
-        self.log("entropy", self.entropy, prog_bar=True, on_step=True)
         # self.log("games", self.games, prog_bar=True, on_step=True)
-        self.log("lr", self.learning_rate, prog_bar=True, on_step=True)
-        self.log("game_reward", self.game_reward, prog_bar=True, on_step=True)
-        self.log("last_ten_reward", self.last_ten.average(),
-                 prog_bar=True, on_step=True)
-        self.log("last_hundred", self.last_hundred.average(),
-                 prog_bar=True, on_step=True)
-
+        #self.log("lr", self.learning_rate, prog_bar=True, on_step=True)
         q_vals, observations, actions = data
         policy, values = self(observations.squeeze(), self.network)
-        log_probs = policy.log_prob(actions)
-        advantages = q_vals.detach() - values.squeeze()
-        critic_loss = 0.5 * advantages.pow(2).mean()
-        actor_loss = (-log_probs * advantages.detach()).mean()
 
-        loss = actor_loss + critic_loss - self.entropy_scaling * self.entropy
+        if self.environment_name == "CartPole":
+            with torch.no_grad():
+                # critic is trained with normalized returns, so we need to scale the values here
+                advantages = q_vals - values.squeeze() * q_vals.std() + q_vals.mean()
+                # normalize advantages to train actor
+                advantages = (advantages - advantages.mean()) / (advantages.std() + self.eps)
+                # normalize returns to train critic
+                targets = (q_vals - q_vals.mean()) / (q_vals.std() + self.eps)
+        else:
+            advantages = q_vals - values.squeeze()
+            targets = q_vals
+        cur_lr = self.trainer.optimizers[0].param_groups[0]['lr']
+        self.log("lr", cur_lr, prog_bar=True, on_step=True)
+        self.log("game_reward", sum(self.game_reward) / len(self.game_reward), prog_bar=True, on_step=True)
+        self.log("last_ten_reward", self.last_ten.average(),
+                 prog_bar=True, on_step=True)
+        self.log("last_hundred_reward", self.last_hundred.average(),
+                 prog_bar=True, on_step=True)
+
+        # print("QVALS", q_vals.shape)
+        # print("observations", observations.shape)
+
+        log_probs = policy.log_prob(actions.squeeze())
+        # print("ADV2 * log_probs", - log_probs * advantages.detach())
+        # print("QVALS SHAPE", q_vals.shape)
+        # print("VALS SHAPE", values.shape)
+        #print("ADVANTAGES", q_vals.dtype, values.dtype)
+        #print("LOG_PROBS", log_probs)
+        #print("ADVANTAGES", advantages)
+        
+        critic_loss = nn.MSELoss()(targets, values.squeeze())
+        actor_loss =  (- log_probs * advantages.detach()).mean()
+
+        #print("ENTROPY", policy.entropy())
+        entropy = policy.entropy().mean()
+        loss = actor_loss + critic_loss - (self.entropy_scaling * entropy)
+        self.log("entropy", entropy, prog_bar=True, on_step=True)
         self.log("actor_loss", actor_loss, prog_bar=True, on_step=True)
         self.log("critic_loss", critic_loss, prog_bar=True, on_step=True)
-        self.log("entropy_coff", self.entropy_scaling * self.entropy, prog_bar=True, on_step=True)
+        self.log("entropy_coff", self.entropy_scaling * entropy, prog_bar=True, on_step=True)
 
         return loss
-
+   
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
-        #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 1)
-        return optimizer
+        optimizer = torch.optim.AdamW(self.network.parameters(), lr=self.learning_rate)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 1)
+        return {"scheduler": scheduler, "optimizer": optimizer}
 
-    def monte_carlo_play_step(self):
-        i = 0
-        qval_for_bootstrap = None
-        rewards = []
+    def monte_carlo_play_step(self, env, environment_index):
+    #   with torch.no_grad():
+        rewards = torch.zeros(self.n_steps)
         actions = []
         observations = []
         done_indices = []
         in_progress_mask = torch.ones(self.n_steps + 1)
-        self.entropy = 0
-        with torch.no_grad():
-            while(True):
-                self.env.render()
-                first_observation = self.observation.__array__(np.float32)
-                first_observation = torch.tensor(first_observation)
-                # first_observation = first_observation.permute(3, 0, 1, 2)
-                observations.append(first_observation)
+        for n_step_index in range(self.n_steps):
+            #   env.render()
+            observation = self.transform_observation(self.observations[environment_index])
+            observations.append(observation)
 
-                policy, value = self(first_observation, self.network)
-                sampled_action = policy.sample()
-                actions.append(sampled_action)
-                self.entropy += policy.entropy().mean()
-                second_observation, reward, is_done, _ = self.env.step(sampled_action.item())
+            policy, _ = self(observation, self.network)
+            sampled_action = policy.sample().detach()
+            actions.append(sampled_action)
+            new_observation, reward, is_done, info = env.step(sampled_action.item())
 
-                if is_done:
-                    self.last_ten.append(self.game_reward)
-                    self.last_hundred.append(self.game_reward)
-                    self.logger.experiment.add_scalar(
-                        "game_score", self.game_reward, self.games)
-                    self.observation = self.env.reset()
-                    self.game_reward = 0
-                    self.games += 1
-                    done_indices.append(i)
-                    in_progress_mask[i] = 0
+            if reward > 0:
+                self.game_reward[environment_index] += reward
+                
+            rewards[n_step_index] = reward
+            if is_done:
+                self.last_ten.append(self.game_reward[environment_index])
+                self.last_hundred.append(self.game_reward[environment_index])
+                self.logger.experiment.add_scalar(
+                    "game_score", self.game_reward[environment_index], self.games)
+                self.observations[environment_index] = env.reset()
+                self.game_reward[environment_index] = 0
+                self.games += 1
+                done_indices.append(n_step_index)
+                in_progress_mask[n_step_index] = 0
+            else:
+                self.observations[environment_index] = new_observation
+            self.reward += reward
 
-                if i == self.n_steps:
-                    qval_for_bootstrap = value
-                    break
-                else:
-                    self.reward += reward
-                    rewards.append(reward)
+        observation = self.transform_observation(self.observations[environment_index])
+        _, qval_for_bootstrap = self(observation, self.network)
+        qval_for_bootstrap = qval_for_bootstrap.detach()
 
-                    if reward > 0:
-                        self.game_reward += reward
-
-                    self.observation = second_observation
-                    i += 1
-
-            q_vals = torch.zeros(len(rewards) + 1)
-            q_vals[-1] = qval_for_bootstrap
-            for i in reversed(range(len(rewards))):
-                q_vals[i] = rewards[i] + in_progress_mask[i + 1] * self.discount_factor * q_vals[i + 1]
+        q_vals = torch.zeros(len(rewards))
+        next_value = qval_for_bootstrap
+        #print("BOOTSTRAP", qval_for_bootstrap)
+        #print("REWARDS SHAPE", rewards.shape, in_progress_mask.shape, q_vals.shape)
+        for i in reversed(range(len(rewards))):
+            next_value = rewards[i] + in_progress_mask[i + 1] * self.discount_factor * next_value
+            q_vals[i] = next_value
+            #print("REWARDS", i, rewards[i], in_progress_mask[i + 1], self.discount_factor, q_vals[i + 1], q_vals[i])
+        #print("REWARDS", rewards, in_progress_mask, q_vals)
+        #print(q_vals.shape, len(observations))
+        #print("QVALS", q_vals)
 
         return (q_vals.detach(), observations, actions)
+      #return (q_vals, observations, actions)
+
+    def transform_observation(self, observation):
+      observation = torch.tensor(observation.__array__(np.float32))
+      if self.environment_name == "Pong":
+        observation = observation.permute(3, 0, 1, 2)
+      return observation
 
     def prepare_for_batch(self, observation):
         observation = torch.tensor(observation.__array__(np.float32))
-        # observation = observation.permute(3, 0, 1, 2)
-        return torch.squeeze(observation)
+        if self.environment_name == "Pong":
+            observation = observation.permute(3, 0, 1, 2)
+        return torch.squeeze(self.transform_observation(observation))
 
     def iterate_batch(self):
         for i in range(int(self.epoch_length)):
-            (q_vals, observations, actions) = self.monte_carlo_play_step()
-            for j in range(len(q_vals)):
-                yield (q_vals[j], observations[j], actions[j])
+            for j in range(len(self.envs)):
+              (q_vals, observations, actions) = self.monte_carlo_play_step(self.envs[j], j)
+              for k in range(self.n_steps):
+                  yield (q_vals[k], observations[k], actions[k])
+
+    def test_iterated_batch(self):
+        for i in range(int(self.epoch_length)):
+            self.envs[0].render()
+            observation = self.transform_observation(self.observations[0])
+            policy, _ = self(observation, self.network)
+            action = torch.argmax(policy.logits)
+            new_observation, reward, is_done, info = self.envs[0].step(action.item())
+            if is_done:
+                self.observations[0] = self.envs[0].reset()
+            else:
+                self.observations[0] = new_observation
+            yield (action)
+
 
     def training_epoch_end(self, outputs):
         if self.games != 0:
@@ -232,7 +298,7 @@ class A2C(LightningModule):
         self.reward = 0
 
     def test_dataloader(self):
-        return self.dataloader(self.iterate_batch)
+        return self.dataloader(self.test_iterated_batch)
 
     def train_dataloader(self):
         return self.dataloader(self.iterate_batch)
@@ -241,17 +307,17 @@ class A2C(LightningModule):
         self.dataset = ExperienceSourceDataset(batch_iterator)
         # for i in range(pre_steps):
 
-        return DataLoader(dataset=self.dataset, batch_size=self.n_steps)
-
+        return DataLoader(dataset=self.dataset, batch_size=self.n_steps * self.environment_count)
 
 # standard, dueling, or double
 use_gpus = False
-lightning_module = A2C(use_gpus, n_steps=5)
+lightning_module = A2C(use_gpus=False, n_steps=5, env_name="Pong", environment_count=1)
+lightning_module = lightning_module.load_from_checkpoint("./epoch=21-step=1100000.ckpt").cpu()
 if use_gpus:
     trainer = Trainer(progress_bar_refresh_rate=20, max_epochs=40, gpus=1)
 else:
     trainer = Trainer(progress_bar_refresh_rate=20, max_epochs=40)
 # trainer.tune(lightning_module)
-trainer.fit(lightning_module)
-trainer.save_checkpoint("a2c.ckpt")
-# trainer.test(lightning_module)
+# trainer.fit(lightning_module)
+# trainer.save_checkpoint("a2c.ckpt")
+trainer.test(lightning_module)
