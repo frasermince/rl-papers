@@ -9,7 +9,10 @@ from pl_bolts.datamodules.experience_source import ExperienceSourceDataset
 from torch.utils.data import DataLoader
 import time
 from torch.distributions import Categorical
+import inspect
 
+def assert_equals(a, b):
+  assert a == torch.Size(b), f"{a} != {b}"
 
 class Memory:
     def __init__(self, length):
@@ -103,8 +106,9 @@ class A2CNet(nn.Module):
 
 
 class A2C(LightningModule):
-    def __init__(self, use_gpus=True, learning_rate=1e-4, n_steps=5, env_name="Pong", environment_count=8):
+    def __init__(self, use_gpus=True, learning_rate=1e-3, n_steps=5, env_name="Pong", environment_count=8, normalize_advantages=False):
         super().__init__()
+        self.normalize_advantages = normalize_advantages
         self.environment_count = environment_count
         self.envs = []
         self.observations = []
@@ -113,7 +117,8 @@ class A2C(LightningModule):
         self.environment_name = env_name
         for i in range(self.environment_count):
           if self.environment_name == "Pong":
-            env = gym.make("Pong-v4")
+            # env = gym.make("Pong-v4")
+            env = gym.make("Breakout-v0")
             env = wrappers.FrameStack(wrappers.ResizeObservation(
                 wrappers.GrayScaleObservation(env), 84), 4)
           elif self.environment_name == "CartPole":
@@ -132,11 +137,12 @@ class A2C(LightningModule):
             self.network = A2CNetCartPole(self.action_count, False)
         self.reward = 0
         self.games = 0
-        self.epoch_length = 50000
+        self.epoch_length = 20000
         self.learning_rate = learning_rate
         self.last_ten = Memory(10)
         self.last_hundred = Memory(100)
         self.entropy_scaling = 0.01
+        self.automatic_optimization = False
 
     def forward(self, observation, net):
         policy, value = net(observation)
@@ -146,58 +152,68 @@ class A2C(LightningModule):
         time.sleep(0.01)
 
     def training_step(self, data, batch_idx):
-        # self.log("games", self.games, prog_bar=True, on_step=True)
-        #self.log("lr", self.learning_rate, prog_bar=True, on_step=True)
+        opt = self.optimizers()
+        opt.zero_grad()
         q_vals, observations, actions = data
+        sch = self.lr_scheduler()
+        actions = actions.squeeze()
+        assert_equals(observations.squeeze().shape, [self.n_steps * self.environment_count, 4, 84, 84])
         policy, values = self(observations.squeeze(), self.network)
+        values = values.squeeze()
 
-        if self.environment_name == "CartPole":
+        advantages = q_vals - values.squeeze()
+        if self.normalize_advantages:
             with torch.no_grad():
-                # critic is trained with normalized returns, so we need to scale the values here
-                advantages = q_vals - values.squeeze() * q_vals.std() + q_vals.mean()
-                # normalize advantages to train actor
-                advantages = (advantages - advantages.mean()) / (advantages.std() + self.eps)
-                # normalize returns to train critic
-                targets = (q_vals - q_vals.mean()) / (q_vals.std() + self.eps)
-        else:
-            advantages = q_vals - values.squeeze()
-            targets = q_vals
+                # print("first", advantages)
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                # print("second", advantages)
+
         cur_lr = self.trainer.optimizers[0].param_groups[0]['lr']
         self.log("lr", cur_lr, prog_bar=True, on_step=True)
         self.log("game_reward", sum(self.game_reward) / len(self.game_reward), prog_bar=True, on_step=True)
         self.log("last_ten_reward", self.last_ten.average(),
-                 prog_bar=True, on_step=True)
+                  prog_bar=True, on_step=True)
         self.log("last_hundred_reward", self.last_hundred.average(),
-                 prog_bar=True, on_step=True)
+                  prog_bar=True, on_step=True)
+        print("STATE DICT", sch.state_dict())
 
-        # print("QVALS", q_vals.shape)
-        # print("observations", observations.shape)
-
+        #print("QVALS", q_vals.shape)
+        #print("observations", observations.shape)
+        assert_equals(actions.shape, [self.n_steps * self.environment_count])
         log_probs = policy.log_prob(actions.squeeze())
-        # print("ADV2 * log_probs", - log_probs * advantages.detach())
-        # print("QVALS SHAPE", q_vals.shape)
-        # print("VALS SHAPE", values.shape)
         #print("ADVANTAGES", q_vals.dtype, values.dtype)
         #print("LOG_PROBS", log_probs)
         #print("ADVANTAGES", advantages)
-        
-        critic_loss = nn.MSELoss()(targets, values.squeeze())
-        actor_loss =  (- log_probs * advantages.detach()).mean()
+        assert_equals(q_vals.shape, [self.n_steps * self.environment_count])
+        assert_equals(values.shape, [self.n_steps * self.environment_count])
+        assert_equals(log_probs.shape, [self.n_steps * self.environment_count])
+        assert_equals(advantages.shape, [self.n_steps * self.environment_count])
+
+        critic_loss = nn.MSELoss()(q_vals, values.squeeze())
+        actor_loss = - (log_probs * advantages.detach()).mean()
 
         #print("ENTROPY", policy.entropy())
         entropy = policy.entropy().mean()
+        #print("ENTROPY MEAN", entropy)
         loss = actor_loss + critic_loss - (self.entropy_scaling * entropy)
         self.log("entropy", entropy, prog_bar=True, on_step=True)
         self.log("actor_loss", actor_loss, prog_bar=True, on_step=True)
         self.log("critic_loss", critic_loss, prog_bar=True, on_step=True)
         self.log("entropy_coff", self.entropy_scaling * entropy, prog_bar=True, on_step=True)
+        self.manual_backward(loss)
+        print(inspect.getsource(sch.step))
+        opt.step()
+        sch.step()
+        #print("STEP", self.epoch + batch_idx / self.epoch_length)
+        #self.epoch + batch_idx / self.epoch_length)
 
         return loss
-   
+
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.network.parameters(), lr=self.learning_rate)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 1)
-        return {"scheduler": scheduler, "optimizer": optimizer}
+        #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, last_epoch=100)
+        return [optimizer], [scheduler]#{"scheduler": scheduler, "optimizer": optimizer}
 
     def monte_carlo_play_step(self, env, environment_index):
     #   with torch.no_grad():
@@ -207,7 +223,7 @@ class A2C(LightningModule):
         done_indices = []
         in_progress_mask = torch.ones(self.n_steps + 1)
         for n_step_index in range(self.n_steps):
-            #   env.render()
+            # env.render()
             observation = self.transform_observation(self.observations[environment_index])
             observations.append(observation)
 
@@ -246,7 +262,7 @@ class A2C(LightningModule):
             next_value = rewards[i] + in_progress_mask[i + 1] * self.discount_factor * next_value
             q_vals[i] = next_value
             #print("REWARDS", i, rewards[i], in_progress_mask[i + 1], self.discount_factor, q_vals[i + 1], q_vals[i])
-        #print("REWARDS", rewards, in_progress_mask, q_vals)
+        # print("REWARDS", rewards, in_progress_mask, q_vals)
         #print(q_vals.shape, len(observations))
         #print("QVALS", q_vals)
 
@@ -311,13 +327,13 @@ class A2C(LightningModule):
 
 # standard, dueling, or double
 use_gpus = False
-lightning_module = A2C(use_gpus=False, n_steps=5, env_name="Pong", environment_count=1)
-lightning_module = lightning_module.load_from_checkpoint("./epoch=21-step=1100000.ckpt").cpu()
+lightning_module = A2C(use_gpus=False, n_steps=5, env_name="Pong", environment_count=16)
+# lightning_module = lightning_module.load_from_checkpoint("./epoch=21-step=1100000.ckpt").cpu()
 if use_gpus:
-    trainer = Trainer(progress_bar_refresh_rate=20, max_epochs=40, gpus=1)
+    trainer = Trainer(progress_bar_refresh_rate=20, max_epochs=100, gpus=1)
 else:
-    trainer = Trainer(progress_bar_refresh_rate=20, max_epochs=40)
+    trainer = Trainer(progress_bar_refresh_rate=20, max_epochs=100)
 # trainer.tune(lightning_module)
-# trainer.fit(lightning_module)
+trainer.fit(lightning_module)
 # trainer.save_checkpoint("a2c.ckpt")
-trainer.test(lightning_module)
+# trainer.test(lightning_module)

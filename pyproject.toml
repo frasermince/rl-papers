@@ -7,7 +7,7 @@ authors = ["Fraser Mince <frasermince@gmail.com>"]
 [tool.poetry.dependencies]
 python = "^3.8"
 torch = "^1.8.1"
-pytorch-lightning = "^1.2.9"
+pytorch-lightning = "^1.6.3"
 numpy = "^1.20.2"
 lightning-bolts = "^0.3.3"
 tensorboard = "^2.4.0"
