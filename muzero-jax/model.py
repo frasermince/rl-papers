@@ -4,6 +4,7 @@ import flax.linen as nn
 import random
 from chex import assert_axis_dimension, assert_shape
 from jax import random
+from jaxline import utils as jl_utils
 
 epsilon = 0.001
 
@@ -199,32 +200,59 @@ class MuZeroNet(nn.Module):
 
     def initialize_networks(self, key):
       key, key1, key2, key3 = random.split(key, num=4)
+      x = random.normal(key1, (8, 1, 32, 96, 96, 3))
+      y = random.normal(key2, (8, 1, 32))
+      representation_init = jax.pmap(lambda *x: self.representation.init(*x))
+
+      key3 = jl_utils.bcast_local_devices(key3)
+      representation_params = representation_init(key3, x, y)
+      key, key1, key2, key3 = random.split(key, num=4)
+      x = random.normal(key2, (8, 1, 6, 6, 256)) 
+      y = random.normal(key1, (8, 1, 6, 6)) 
+
+      dynamics_init = jax.pmap(lambda *x: self.dynamics.init(*x))
+      key3 = jl_utils.bcast_local_devices(key3)
+      dynamics_params = dynamics_init(key3, x, y)
+
+      key, key1, key2 = random.split(key, num=3)
+      x = random.normal(key1, (8, 1, 6, 6, 256)) 
+      prediction_init = jax.pmap(lambda *x: self.prediction.init(*x))
+      key2 = jl_utils.bcast_local_devices(key2)
+      prediction_params = prediction_init(key2, x)
+      return (key, representation_params, dynamics_params, prediction_params)
+
+    def initialize_networks_individual(self, key):
+      key, key1, key2, key3 = random.split(key, num=4)
       x = random.normal(key1, (1, 32, 96, 96, 3))
       y = random.normal(key2, (1, 32))
+
       representation_params = self.representation.init(key3, x, y)
       key, key1, key2, key3 = random.split(key, num=4)
       x = random.normal(key2, (1, 6, 6, 256)) 
       y = random.normal(key1, (1, 6, 6)) 
+
       dynamics_params = self.dynamics.init(key3, x, y)
+
       key, key1, key2 = random.split(key, num=3)
       x = random.normal(key1, (1, 6, 6, 256)) 
       prediction_params = self.prediction.init(key2, x)
       return (key, representation_params, dynamics_params, prediction_params)
 
+
     def forward_observation(self, key, params, actions, observations):
         representation_params, _, _ = params 
         observations = observations#.to(self.device)
         actions = actions#.to(self.device)
-        hidden_state, representation_params = self.representation_net(representation_params, observations, actions)
+        hidden_state, representation_params = self.representation.apply(representation_params, observations, actions, mutable=['batch_stats'])
         return self.forward_hidden_state(key, params, actions, hidden_state)
 
     def forward_hidden_state(self, key, params, actions, hidden_state):
         representation_params, dynamics_params, prediction_params = params 
-        (value, policy), prediction_params = self.prediction_net(prediction_params, hidden_state)
+        (value, policy), prediction_params = self.prediction.apply(prediction_params, hidden_state, mutable=['batch_stats'])
         key, subkey = random.split(key)
         new_actions = jax.random.categorical(subkey, policy)
         assert_shape(new_actions, [actions.shape[0]])
         new_actions = one_hot_encode(new_actions, new_actions.shape, hidden_state.shape[1:3])
-        (new_state, reward), dynamics_params = self.dynamics_net(dynamics_params, hidden_state, new_actions)
+        (new_state, reward), dynamics_params = self.dynamics.apply(dynamics_params, hidden_state, new_actions, mutable=['batch_stats'])
         params = (representation_params, dynamics_params, prediction_params)
         return (value, policy, reward, new_state, key)

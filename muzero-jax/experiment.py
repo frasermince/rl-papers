@@ -17,6 +17,7 @@ import gym.wrappers as wrappers
 from jax import random
 from experience_replay import MuZeroMemory
 from self_play import play_game  
+from chex import assert_axis_dimension, assert_shape
 
 
 class MuzeroExperiment(experiment.AbstractExperiment):
@@ -63,8 +64,8 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       self.env = wrappers.ResizeObservation(self.env, 96)
       self.initial_observation = self.env.reset()
       self.starting_policy = jnp.ones(18) / 18
-      # self._update_func = jax.pmap(self._update_func, axis_name='i',
-                                #  donate_argnums=(0, 1))
+      self._update_func = jax.pmap(self._update_func, axis_name='i',
+                                 donate_argnums=(0, 1), in_axes=(None, None, (0, 0, 0, 0, 0, 0, 0), None, None))
 
 
       self.initial_observation = jnp.array(self.initial_observation)
@@ -125,16 +126,14 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self.config.optimizer,
         self._lr_schedule)
 
-    init_net = jax.pmap(lambda *a: self.network.initialize_networks(*a))
     #TODO check how keys in jaxline are supposed to work
-    key = jl_utils.bcast_local_devices(self.key)
-    self.key, representation_params, dynamics_params, prediction_params = init_net(key)
+    self.key, representation_params, dynamics_params, prediction_params = self.network.initialize_networks_individual(self.key)
     self._params = (representation_params, dynamics_params, prediction_params)
-    init_opt = jax.pmap(self._optimizer.init)
-    self._opt_state = init_opt(self._params)
+    # init_opt = jax.pmap(self._optimizer.init)
+    self._opt_state = self._optimizer.init(self._params)
 
     self._target_params = self._params
-    self.key, game_buffer = play_game(self.key[0], self._params, self.memory, self.env, self.game_memory)
+    self.key, game_buffer = play_game(self.key, self._params, self.memory, self.env, self.game_memory)
     self.memory.append_multiple(game_buffer)
 
     with jl_utils.log_activity("training loop"):
@@ -142,7 +141,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         with jax.profiler.StepTraceAnnotation(
             "train", step_num=state.global_step):
           scalar_outputs = self.step(
-              global_step=global_step_devices, rng=step_key, writer=writer)
+              global_step=state.global_step, rng=step_key, writer=writer)
 
           t = time.time()
           # Update state's (scalar) global step (for checkpointing).
@@ -177,9 +176,13 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self._update_func(
             self._params, self._opt_state, inputs, rng, global_step
             ))
+
+    import code; code.interact(local=dict(globals(), **locals()))
     #TODO make sure this is right
-    print("VALUE DIFFERENCE: ", value_difference.shape)
-    self.memory.update_priorities(value_difference[:, -1], indices[-1])
+    assert_shape(value_difference, (jax.device_count(), self.batch_size / jax.device_count(), None)) 
+    assert_shape(indices, (jax.device_count(), self.batch_size / jax.device_count())) 
+    for i in range(value_difference.shape[0]):
+      self.memory.update_priorities(value_difference[i, :, -1], indices[i])
     if global_step % self.target_update_rate == 0:
           self._target_params = self._params
 
@@ -228,15 +231,17 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     """See base class."""
     # num_devices = jax.device_count()
     # global_batch_size = self.config.training.batch_size
-    self.key, memories = self.memory.sample(self.batch_size, self.key)
-    observations = memories["observations"]
-    actions = memories["actions"]
-    policies = memories["policies"]
-    values = memories["values"]
-    rewards = memories["rewards"]
-    indices = memories["indices"]
-    priorities = memories["priority"]
-    yield (jnp.expand_dims(observations, axis=0), jnp.expand_dims(actions, axis=0), jnp.expand_dims(policies, axis=0), jnp.expand_dims(values, axis=0), jnp.expand_dims(rewards, axis=0), jnp.expand_dims(indices, axis=0), jnp.expand_dims(priorities, axis=0))
+    while True:
+      self.key, memories = self.memory.sample(self.batch_size, self.key)
+      observations = np.reshape(memories["observations"], (jax.device_count(), int(self.batch_size / jax.device_count()), 32, 96, 96, 3))
+      actions = np.reshape(memories["actions"], (jax.device_count(), int(self.batch_size / jax.device_count()), 6, 32))
+      policies = np.reshape(memories["policies"], (jax.device_count(), int(self.batch_size / jax.device_count()), 6, 18))
+      values = np.reshape(memories["values"], (jax.device_count(), int(self.batch_size / jax.device_count()), 6))
+      rewards = np.reshape(memories["rewards"], (jax.device_count(), int(self.batch_size / jax.device_count()), 6))
+      indices = np.reshape(memories["indices"], (jax.device_count(), int(self.batch_size / jax.device_count())))
+      priorities = np.reshape(memories["priority"], (jax.device_count(), int(self.batch_size / jax.device_count())))
+      print(observations.shape, actions.shape, policies.shape, values.shape, rewards.shape, indices.shape, priorities.shape)
+      yield (observations, actions, policies, values, rewards, indices, priorities)
 
     # per_device_batch_size, ragged = divmod(global_batch_size, num_devices)
 
@@ -324,7 +329,6 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         # with torch.no_grad():
         scalar_values = support_to_scalar(jnp.stack(values).transpose(1, 0, 2))
         value_difference = jnp.abs(search_value - scalar_values)
-        print("value_difference", value_difference.shape, scalar_values.shape, search_value.shape)
  
         loss_scalars = dict(
           loss=loss,
@@ -401,14 +405,17 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     grad_loss_fn = jax.grad(self._muzero_loss_fn, has_aux=True)
     scaled_grads, loss_scalars = grad_loss_fn(
         params, inputs, rng, global_step)
+
     grads = jax.lax.psum(scaled_grads, axis_name='i')
     value_difference = loss_scalars["value_difference"]
+    del loss_scalars["value_difference"]
 
     # Grab the learning rate to log before performing the step.
     learning_rate = self._lr_schedule(global_step)
 
     # Compute and apply updates via our optimizer.
     updates, opt_state = self._optimizer.update(grads, opt_state, params)
+    print("****PARAMS", updates)
     params = optax.apply_updates(params, updates)
 
     # n_params = 0

@@ -70,10 +70,8 @@ def expand(environment, action, state, index):
   state = jnp.expand_dims(state, axis=0)
   action = one_hot_encode(action, action.shape, state.shape[1:3])
 
-  dynamics_net = jax.pmap(lambda *x: network.dynamics_net(*x))
-  prediction_net = jax.pmap(lambda *x: network.prediction_net(*x))
-  (new_state, reward), _ = dynamics_net(dynamics_params, jnp.expand_dims(state, axis= 0), jnp.expand_dims(action, axis= 0))
-  (value, policy), _ = prediction_net(prediction_params, jnp.expand_dims(state, axis=0))
+  (new_state, reward), _ = network.dynamics_net(dynamics_params, state, action)
+  (value, policy), _ = network.prediction_net(prediction_params, state)
   policy = policy.squeeze()
   environment["state"] = environment["state"].at[index].set(new_state.squeeze())
   policy = jnp.exp(policy)
@@ -195,10 +193,12 @@ def monte_carlo_tree_search(params, observation, action):
     network = MuZeroNet()
     (representation_params, _, prediction_params) = params
     # print("REP SHAPE", representation_params)
-    representation_net = jax.pmap(lambda *x: network.representation_net(*x))
-    prediction_net = jax.pmap(lambda *x: network.prediction_net(*x))
-    hidden_state, _ = representation_net(representation_params, jnp.expand_dims(observation, axis=0), jnp.expand_dims(action, axis=0))
-    (value, policy), _ = prediction_net(prediction_params, hidden_state)
+    # TODO find better way than copying 8 times
+
+    # import code; code.interact(local=dict(globals(), **locals()))
+    # representation_fn = jax.pmap(lambda *x: network.representation_net(*x))
+    hidden_state, _ = network.representation_net(representation_params, observation, action)
+    (value, policy), _ = network.prediction_net(prediction_params, hidden_state)
     #node = Node(policy, network.prediction_net, network.dynamics_net, self.device, normalizer)
     policy, value, environment = perform_simulations(params, hidden_state, policy.squeeze())
 

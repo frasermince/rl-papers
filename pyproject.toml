@@ -20,7 +20,7 @@ ale-py = "0.7.5"
 opencv-python = "^4.5.5.64"
 gym = {extras = ["atari", "accept-rom-license"], version = "^0.23.0"}
 packaging = "^20.9"
-jax = "^0.3.13"
+jax = {extras = ["tpu"], version = "^0.3.13"}
 jaxlib = "^0.3.10"
 flax = "^0.5.2"
 chex = "^0.1.3"
