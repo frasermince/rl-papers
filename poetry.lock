@@ -269,6 +269,19 @@ optional = false
 python-versions = ">=3.5"
 
 [[package]]
+name = "dm-env"
+version = "1.5"
+description = "A Python interface for Reinforcement Learning environments."
+category = "main"
+optional = false
+python-versions = "*"
+
+[package.dependencies]
+absl-py = "*"
+dm-tree = "*"
+numpy = "*"
+
+[[package]]
 name = "dm-tree"
 version = "0.1.7"
 description = "Tree is a library for working with nested data structures."
@@ -294,6 +307,21 @@ description = "Easy to use Python subprocess interface."
 category = "main"
 optional = false
 python-versions = "*"
+
+[[package]]
+name = "envpool"
+version = "0.6.2.post2"
+description = "\"C++-based high-performance parallel environment execution engine (vectorized env) for general RL environments.\""
+category = "main"
+optional = false
+python-versions = ">=3.7"
+
+[package.dependencies]
+dm-env = ">=1.4"
+gym = ">=0.18"
+numpy = ">=1.19"
+types-protobuf = ">=3.17.3"
+typing-extensions = "*"
 
 [[package]]
 name = "etils"
@@ -1552,6 +1580,14 @@ python-versions = ">=3.7"
 test = ["pre-commit", "pytest"]
 
 [[package]]
+name = "types-protobuf"
+version = "3.19.22"
+description = "Typing stubs for protobuf"
+category = "main"
+optional = false
+python-versions = "*"
+
+[[package]]
 name = "typing-extensions"
 version = "4.3.0"
 description = "Backported and Experimental Type Hints for Python 3.7+"
@@ -1661,7 +1697,7 @@ testing = ["pytest (>=6)", "pytest-checkdocs (>=2.4)", "pytest-flake8", "pytest-
 [metadata]
 lock-version = "1.1"
 python-versions = ">=3.7, <3.10"
-content-hash = "aea55f139f5b6d44afa9aed501fa825fc237e1f8691eed6a22b560c8481afcd6"
+content-hash = "24b01e656286dc4a414d1bcca4038d55bcca6b085528ee961577cf4bc5555d83"
 
 [metadata.files]
 absl-py = [
@@ -1842,6 +1878,10 @@ decorator = [
     {file = "decorator-5.1.1-py3-none-any.whl", hash = "sha256:b8c3f85900b9dc423225913c5aace94729fe1fa9763b38939a95226f02d37186"},
     {file = "decorator-5.1.1.tar.gz", hash = "sha256:637996211036b6385ef91435e4fae22989472f9d571faba8927ba8253acbc330"},
 ]
+dm-env = [
+    {file = "dm-env-1.5.tar.gz", hash = "sha256:3efd99b0652563599507c415d48b51896c88be2f01c2b6250af8bab51571e353"},
+    {file = "dm_env-1.5-py3-none-any.whl", hash = "sha256:026aaa404fb3ced1090f6a4e9ce724cb2998c4ea5fda16bff65560d458ef4467"},
+]
 dm-tree = [
     {file = "dm-tree-0.1.7.tar.gz", hash = "sha256:30fec8aca5b92823c0e796a2f33b875b4dccd470b57e91e6c542405c5f77fd2a"},
     {file = "dm_tree-0.1.7-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:3fae437135b6cbbdd51e96488a35e78c3617defa0b65265e7e8752d506f933fd"},
@@ -1873,6 +1913,11 @@ docker-pycreds = [
 easyprocess = [
     {file = "EasyProcess-1.1-py3-none-any.whl", hash = "sha256:82eed523a0a5eb12a81fa4eacd9f342caeb3f900eb4b798740e6696ad07e63f9"},
     {file = "EasyProcess-1.1.tar.gz", hash = "sha256:885898302a57aab948973e8b5d32a4229392b9fb2d986ab1d4ffd590e5ba90ec"},
+]
+envpool = [
+    {file = "envpool-0.6.2.post2-cp37-cp37m-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bfd7ea30767825b4468a309f318a776ec7f9960e5e925a2685d5875aa6f4e331"},
+    {file = "envpool-0.6.2.post2-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e23246c93dda36793e94d4919ffe5fdb147944b7fd35b90fdd1aab05a9a8a7c4"},
+    {file = "envpool-0.6.2.post2-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:511d1c042d7910893df4b71b4da00db31f7b9a28d215f45a47158999eede53e6"},
 ]
 etils = [
     {file = "etils-0.6.0-py3-none-any.whl", hash = "sha256:e47b14402f2fc883c70a394e86b3236e4929cfd90187fba58d2f4d3eb2e07c05"},
@@ -2855,6 +2900,10 @@ tqdm = [
 traitlets = [
     {file = "traitlets-5.3.0-py3-none-any.whl", hash = "sha256:65fa18961659635933100db8ca120ef6220555286949774b9cfc106f941d1c7a"},
     {file = "traitlets-5.3.0.tar.gz", hash = "sha256:0bb9f1f9f017aa8ec187d8b1b2a7a6626a2a1d877116baba52a129bfa124f8e2"},
+]
+types-protobuf = [
+    {file = "types-protobuf-3.19.22.tar.gz", hash = "sha256:d2b26861b0cb46a3c8669b0df507b7ef72e487da66d61f9f3576aa76ce028a83"},
+    {file = "types_protobuf-3.19.22-py3-none-any.whl", hash = "sha256:d291388678af91bb045fafa864f142dc4ac22f5d4cdca097c7d8d8a32fa9b3ab"},
 ]
 typing-extensions = [
     {file = "typing_extensions-4.3.0-py3-none-any.whl", hash = "sha256:25642c956049920a5aa49edcdd6ab1e06d7e5d467fc00e0506c44ac86fbfca02"},

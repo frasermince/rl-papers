@@ -3,15 +3,26 @@ from jax import random
 from model import scatter
 
 # TODO Add per game memory for chess and go
+
+def flatten(memory):
+    return ((memory.observations, memory.actions, memory.rewards, memory.values, memory.policies, memory.priorities),
+        (memory.rollout_size, memory.n_step, memory.discount_rate, memory.length))
+
+def unflatten(aux, children):
+    print(children)
+    (observations, actions, rewards, values, policies, priorities) = children
+    (rollout_size, n_step, discount_rate, length) = aux
+    return MuZeroMemory(length, observations=observations, actions=actions, rewards=rewards, values=values, policies=policies, priorities=priorities, n_step=n_step, discount_rate=discount_rate)
+
 class MuZeroMemory:
-    def __init__(self, length, rollout_size=5, n_step=10, discount_rate=0.995):
+    def __init__(self, length, observations = [], actions = [], rewards = [], values = [], policies = [], priorities = [], rollout_size=5, n_step=10, discount_rate=0.995):
         self.length = length
-        self.observations = []
-        self.actions = []
-        self.rewards = []
-        self.values = []
-        self.policies = []
-        self.priorities = []
+        self.observations = observations
+        self.actions = actions
+        self.rewards = rewards
+        self.values = values
+        self.policies = policies
+        self.priorities = priorities
         self.rollout_size = rollout_size
         self.n_step = n_step
         self.discount_rate = discount_rate
@@ -27,22 +38,16 @@ class MuZeroMemory:
             self.values.append(array.values[i].item())
             self.policies.append(array.policies[i])
             self.priorities.append(abs(array.values[i].item() - self.compute_nstep_value(len(self.priorities), array.values[i]).item()))
-        print(len(self.observations))
-        print("***PRIORITIES LENGTH", len(self.priorities))
 
     def append(self, item):
         (observation, action, policy, value, reward) = item
         self.observations.append(observation)
         self.actions.append(action)
-        #print("ORIGINAL", reward)
-        #support_reward = scalar_to_support(reward)
-        #print("SUPPORT", support_reward)
-        #scalar_reward = support_to_scalar(support_reward.unsqueeze(0).unsqueeze(0), should_print=True)
-        #print("NEW SCALAR", scalar_reward)
         self.rewards.append(reward)
         self.values.append(value)
         self.policies.append(policy)
-        priority = abs(value.item() - self.compute_nstep_value(len(self.priorities), value).item())
+        # priority = abs(value.item() - self.compute_nstep_value(len(self.priorities), value).item())
+        priority = abs(value - self.compute_nstep_value(len(self.priorities), value))
         self.priorities.append(priority)
         if (len(self.observations) > self.length):
             self.observations.pop(0)
@@ -54,10 +59,8 @@ class MuZeroMemory:
 
     def update_priorities(self, priorities, indices):
       pr = np.array(self.priorities)
-      print("PRIORITIES", priorities.shape, indices.shape, pr.shape)
       scatter(pr, 0, indices, priorities.squeeze())
       self.priorities = np.asarray(pr)
-      #print(self.priorities)
 
 
     # TODO confirm value targets are correct. See make_target in psuedocode
@@ -80,7 +83,6 @@ class MuZeroMemory:
         available_indices = list(range(0, len(self.observations)))
         starting_index = 32
         available_indices = np.stack(available_indices[starting_index : -(self.rollout_size + self.n_step)])
-        print(self.priorities[starting_index : -(self.rollout_size + self.n_step)])
         priorities = np.stack(self.priorities[starting_index : -(self.rollout_size + self.n_step)])
         priorities = priorities.at[priorities==0].set(1)
         sum = np.sum(priorities)
@@ -118,14 +120,6 @@ class MuZeroMemory:
             policy_result.append(np.array(k_step_policies))
             index_result.append(indices)
             priority_result.append(priorities[count])
-
-        
-        np.stack(action_result)
-        np.stack(reward_result)
-        np.stack(value_result)
-        np.stack(policy_result)
-        np.stack(index_result)
-        np.stack(priority_result)
 
         return key, {
             "observations": np.stack(observation_result),

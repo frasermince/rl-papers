@@ -4,6 +4,7 @@ from model import one_hot_encode, support_to_scalar, MuZeroNet, scatter
 import jax.lax as lax
 import jax
 import flax.linen as nn
+import envpool
 # from jax.config import config
 
 # config.update('jax_disable_jit', True)
@@ -188,7 +189,7 @@ def perform_simulations(params, hidden_state, policy):
   return visit_policy(environment), environment["q_val"][0], environment
 
 
-@jax.jit
+
 def monte_carlo_tree_search(params, observation, action):
     network = MuZeroNet()
     (representation_params, _, prediction_params) = params
@@ -206,17 +207,23 @@ def monte_carlo_tree_search(params, observation, action):
 
 
 
-def play_step(key, params, current_game_buffer, past_memories, env):
+def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
+    (key, params, current_game_buffer, env_handle, recv, send) = p
     # if self.steps == 1:
     #   self.network.set_device(self.device)
     #   self.target_network.set_device(self.device)
+    past_memories = current_game_buffer.last_n(32)
+    _, (second_observation, reward, is_done, info) = recv(env_handle)
+
     past_observations = jnp.expand_dims(jnp.stack(past_memories["observations"]), axis=0)#.to(self.device)
     past_actions = jnp.expand_dims(jnp.array(past_memories["actions"]), axis=0)#.to(self.device)
     policy, value, environment = monte_carlo_tree_search(params, past_observations, past_actions)
     key, subkey = jax.random.split(key)
     action = jax.random.categorical(subkey, policy)
 
-    second_observation, reward, is_done, _ = env.step(action)
+    # second_observation, reward, is_done, _ = env.step(action)
+    new_handle = send(env_handle, action, info['env_id'])
+
     # reward += reward
     # if reward > 0:
     #     game_reward += reward
@@ -227,14 +234,18 @@ def play_step(key, params, current_game_buffer, past_memories, env):
     #     game_reward = 0
     #     self.games += 1
 
-    cpus = jax.devices("cpu")
-    current_game_buffer.append((jnp.array(second_observation) / 255, action.item(), jax.device_put(policy, cpus[0]), jax.device_put(value, cpus[0]), reward))
-    return second_observation, current_game_buffer, key, reward#, game_reward
+    # cpus = jax.devices("cpu")
+    # import code; code.interact(local=dict(globals(), **locals()))
+    # current_game_buffer.append((jnp.array(second_observation) / 255, action, policy, value, reward))
+    return (key, params, current_game_buffer, new_handle, recv, send)#, game_reward
 
-def play_game(key, params, memory, env, starting_memories):
-    current_game_buffer = starting_memories
-    for _ in range(100):
-        # TODO backfill from previous memories
-        past_memories = current_game_buffer.last_n(32)
-        observation, current_game_buffer, key, reward, = play_step(key, params, current_game_buffer, past_memories, env)
-    return key, current_game_buffer
+@jax.jit
+def play_game(key, params, starting_memories, env_handle, recv, send):
+    # TODO set 200 per environment
+    (key, params, current_game_buffer, new_handle, recv, send) = lax.fori_loop(0, 200, play_step, (key, params, starting_memories, env_handle, recv, send))
+    return key, current_game_buffer, env_handle
+    # for _ in range(200):
+    #     # TODO backfill from previous memories
+    #     past_memories = current_game_buffer.last_n(32)
+    #     observation, current_game_buffer, key, reward, = play_step(key, params, current_game_buffer, past_memories, env)
+    # return key, current_game_buffer
