@@ -3,8 +3,10 @@ import jax.numpy as jnp
 from model import one_hot_encode, support_to_scalar, MuZeroNet, scatter
 import jax.lax as lax
 import jax
+import flax
 import flax.linen as nn
 import envpool
+from operator import itemgetter
 # from jax.config import config
 
 # config.update('jax_disable_jit', True)
@@ -206,23 +208,41 @@ def monte_carlo_tree_search(params, observation, action):
     return policy, value, environment
 
 
+def add_item(i, data):
+  current_games, time_step, env_id, observation, action, policy, value, reward = data
+  id = env_id[i]
+  current_games.observations = current_games.observations.at[id, time_step].set(observation[i].transpose(1, 2, 0))
+  current_games.actions = current_games.actions.at[id, time_step].set(action[i])
+  current_games.policies = current_games.policies.at[id, time_step].set(policy[i])
+  current_games.values = current_games.values.at[id, time_step].set(value[i])
+  current_games.rewards = current_games.rewards.at[id, time_step].set(reward[i])
+  return current_games, time_step, env_id, observation, action, policy, value, reward
+
 
 def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
-    (key, params, current_game_buffer, env_handle, recv, send) = p
+    step = i + 32
+    (key, params, env_handle, recv, send, current_games) = p
     # if self.steps == 1:
     #   self.network.set_device(self.device)
     #   self.target_network.set_device(self.device)
-    past_memories = current_game_buffer.last_n(32)
     _, (second_observation, reward, is_done, info) = recv(env_handle)
 
-    past_observations = jnp.expand_dims(jnp.stack(past_memories["observations"]), axis=0)#.to(self.device)
-    past_actions = jnp.expand_dims(jnp.array(past_memories["actions"]), axis=0)#.to(self.device)
-    policy, value, environment = monte_carlo_tree_search(params, past_observations, past_actions)
+    get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], step - 32, 32, axis=0).squeeze(), (None, 0))
+    get_observations = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.observations[index], step - 32, 32, axis=0), (None, 0))
+    past_actions = jnp.expand_dims(get_actions(current_games, info['env_id']), axis=1)
+    past_observations = jnp.expand_dims(get_observations(current_games, info['env_id']), axis=1)
+
+    # TODO use 0 for past_observations upon changing to multigame memory
+    monte_carlo_fn = jax.vmap(lambda *x: monte_carlo_tree_search(*x), (None, 0, 0))
+    # import code; code.interact(local=dict(globals(), **locals()))
+    policy, value, environment = monte_carlo_fn(params, past_observations, past_actions)
     key, subkey = jax.random.split(key)
     action = jax.random.categorical(subkey, policy)
+    # import code; code.interact(local=dict(globals(), **locals()))
 
     # second_observation, reward, is_done, _ = env.step(action)
-    new_handle = send(env_handle, action, info['env_id'])
+    new_handle = send(env_handle, jnp.ones(info['env_id'].shape, dtype=jnp.int32), info['env_id'])
+    # import code; code.interact(local=dict(globals(), **locals()))
 
     # reward += reward
     # if reward > 0:
@@ -237,15 +257,17 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # cpus = jax.devices("cpu")
     # import code; code.interact(local=dict(globals(), **locals()))
     # current_game_buffer.append((jnp.array(second_observation) / 255, action, policy, value, reward))
-    return (key, params, current_game_buffer, new_handle, recv, send)#, game_reward
+    current_games, _, _, _, _, _, _, _ = lax.fori_loop(0, 16, add_item, (current_games, step, info['env_id'], second_observation, action, policy, value, reward))
+    return (key, params, new_handle, recv, send, current_games)#, game_reward
 
-@jax.jit
-def play_game(key, params, starting_memories, env_handle, recv, send):
+# @jax.jit
+def play_game(key, params, self_play_memories, env_handle, recv, send):
     # TODO set 200 per environment
-    (key, params, current_game_buffer, new_handle, recv, send) = lax.fori_loop(0, 200, play_step, (key, params, starting_memories, env_handle, recv, send))
-    return key, current_game_buffer, env_handle
-    # for _ in range(200):
+    # (key, params, new_handle, recv, send, self_play_memories) = lax.fori_loop(0, 200, play_step, (key, params, env_handle, recv, send, self_play_memories))
+    # return key, current_game_buffer, env_handle
+
+    for _ in range(200):
     #     # TODO backfill from previous memories
-    #     past_memories = current_game_buffer.last_n(32)
-    #     observation, current_game_buffer, key, reward, = play_step(key, params, current_game_buffer, past_memories, env)
+        (key, params, new_handle, recv, send, self_play_memories) = play_step(0, (key, params, env_handle, recv, send, self_play_memories))
+    return key, self_play_memories, env_handle
     # return key, current_game_buffer

@@ -16,7 +16,7 @@ import functools
 import gym
 import gym.wrappers as wrappers
 from jax import random
-from experience_replay import MuZeroMemory
+from experience_replay import MuZeroMemory, SelfPlayMemory
 from self_play import play_game  
 from chex import assert_axis_dimension, assert_shape
 import envpool
@@ -60,17 +60,22 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       self.key = random.PRNGKey(0)
       self.network = MuZeroNet()
       self.memory = MuZeroMemory(125000, rollout_size=rollout_size)
-      self.starting_memories = MuZeroMemory(125000, rollout_size=rollout_size)
+      self.starting_memories = SelfPlayMemory(64)
       register_pytree_node(
           MuZeroMemory,
-          experience_replay.flatten,
-          experience_replay.unflatten
+          experience_replay.memory_flatten,
+          experience_replay.memory_unflatten
+      )
+      register_pytree_node(
+          SelfPlayMemory,
+          experience_replay.self_play_flatten,
+          experience_replay.self_play_unflatten
       )
       self._train_input = None
       
       self.env = envpool.make("Pong-v5", env_type="gym", num_envs=64, batch_size=16, img_height=96, img_width=96, gray_scale=False, stack_num=1)
       self.env.async_reset()
-      self.env_handle, self.recv, self.send, self.step = self.env.xla()
+      self.env_handle, self.recv, self.send, _ = self.env.xla()
 
       self.initial_observation = self.env.reset()
       self.starting_policy = jnp.ones(18) / 18
@@ -80,8 +85,10 @@ class MuzeroExperiment(experiment.AbstractExperiment):
 
       self.initial_observation = jnp.transpose(jnp.array(self.initial_observation), (0, 2, 3, 1))
       starting_policy = jnp.ones(18) / 18
-      for _ in range(32):
-        self.starting_memories.append((self.initial_observation[0], 0, starting_policy, jnp.broadcast_to(jnp.array(1.0), (1)), 0))
+      for i in range(32):
+        self.starting_memories.observations = self.starting_memories.observations.at[i].set(self.initial_observation[0])
+        self.starting_memories.policies = self.starting_memories.policies.at[:, i].set(starting_policy)
+        # self.starting_memories.append((self.initial_observation[0], 0, starting_policy, jnp.broadcast_to(jnp.array(1.0), (1)), 0))
 
       self.entropy_scaling = 0.01
       self.automatic_optimization = False
@@ -91,16 +98,16 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       self.training_device_count = int(jax.device_count() / 2)
 
   def self_play(self, key, params, starting_memory, handle, recv, send):
-      import code; code.interact(local=dict(globals(), **locals()))
-      result = play_game(key, params, starting_memory, handle, recv, send)
+      key, game_buffer, self.env_handle  = play_game(key, params, starting_memory, handle, recv, send)
       # key, game_buffer, self.env_handle = play_game(key, params, starting_memory, handle, recv, send)
       self.memory.append_multiple(game_buffer)
+      return key, game_buffer
 
   
   def play_games(self):
     while(True):
-      self.key, game_buffer, self.env_handle = self.self_play(self.key, self._target_params, self.starting_memories, self.env_handle, jax.tree_util.Partial(self.recv), jax.tree_util.Partial(self.send))
-      yield game_buffer
+      key, game_buffer = self.self_play(self.key, self._target_params, self.starting_memories, self.env_handle, jax.tree_util.Partial(self.recv), jax.tree_util.Partial(self.send))
+      yield key, game_buffer
 
 
   def train_loop(

@@ -4,15 +4,40 @@ from model import scatter
 
 # TODO Add per game memory for chess and go
 
-def flatten(memory):
+def memory_flatten(memory):
     return ((memory.observations, memory.actions, memory.rewards, memory.values, memory.policies, memory.priorities),
         (memory.rollout_size, memory.n_step, memory.discount_rate, memory.length))
 
-def unflatten(aux, children):
-    print(children)
+def memory_unflatten(aux, children):
     (observations, actions, rewards, values, policies, priorities) = children
     (rollout_size, n_step, discount_rate, length) = aux
     return MuZeroMemory(length, observations=observations, actions=actions, rewards=rewards, values=values, policies=policies, priorities=priorities, n_step=n_step, discount_rate=discount_rate)
+
+def self_play_flatten(memory):
+    return ((memory.observations, memory.actions, memory.rewards, memory.values, memory.policies),
+        (memory.games))
+
+def self_play_unflatten(aux, children):
+    (games) = aux
+    memory = SelfPlayMemory(games)
+    (observations, actions, rewards, values, policies) = children
+    memory.observations = observations
+    memory.actions = actions
+    memory.rewards = rewards
+    memory.values = values
+    memory.policies = policies
+    return memory
+
+
+class SelfPlayMemory:
+    def __init__(self, games):
+        self.games = games
+        self.observations = np.zeros((games, 232, 96, 96, 3))
+        self.actions = np.zeros((games, 232, 1))
+        self.rewards = np.zeros((games, 232, 1))
+        self.values = np.zeros((games, 232, 1))
+        self.policies = np.zeros((games, 232, 18))
+
 
 class MuZeroMemory:
     def __init__(self, length, observations = [], actions = [], rewards = [], values = [], policies = [], priorities = [], rollout_size=5, n_step=10, discount_rate=0.995):
