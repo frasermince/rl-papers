@@ -13,6 +13,7 @@ from operator import itemgetter
 
 # TODO Follow reference implementation for game history
 # TODO Move to storing children of tree in tensor following https://github.com/Hwhitetooth/jax_muzero/blob/948ecc268c88521c0f7a8a5d12df68e3bb370b3a/algorithms/agents.py
+
 discount_factor = jnp.array(0.99)
 c1 = jnp.array(1.25)
 c2 = jnp.array(19652)
@@ -225,6 +226,7 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # if self.steps == 1:
     #   self.network.set_device(self.device)
     #   self.target_network.set_device(self.device)
+    # import code; code.interact(local=dict(globals(), **locals()))
     _, (second_observation, reward, is_done, info) = recv(env_handle)
 
     get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], step - 32, 32, axis=0).squeeze(), (None, 0))

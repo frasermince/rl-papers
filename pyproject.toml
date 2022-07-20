@@ -8,7 +8,7 @@ authors = ["Fraser Mince <frasermince@gmail.com>"]
 # jax = {extras = ["tpu"], version = "^0.3.13"}
 # poetry run pip install "jax[tpu]>=0.3.13" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 [tool.poetry.dependencies]
-python = ">=3.7, <3.10"
+python = ">=3.9, <3.11"
 torch = "^1.9.0"
 pytorch-lightning = "^1.6.3"
 numpy = "^1.20.2"
@@ -23,7 +23,7 @@ ale-py = "0.7.5"
 opencv-python = "^4.5.5.64"
 gym = {extras = ["atari", "accept-rom-license"], version = "^0.23.0"}
 packaging = "^20.9"
-jax = {extras = ["tpu"], version = "^0.3.13"}
+jax = "^0.3.13"
 jaxlib = "^0.3.10"
 flax = "^0.5.2"
 chex = "^0.1.3"
