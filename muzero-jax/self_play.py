@@ -1,5 +1,6 @@
 from os import environ
 import jax.numpy as jnp
+import numpy as np
 from model import one_hot_encode, support_to_scalar, MuZeroNet, scatter
 import jax.lax as lax
 import jax
@@ -186,13 +187,15 @@ def perform_simulations(params, hidden_state, policy):
 
 
 
-  for simulation in range(10):
+  for simulation in range(50):
       environment = monte_carlo_simulation(environment, index=jnp.array(0))
   # TODO confirm that we don't need to divide by the visit count
   return visit_policy(environment), environment["q_val"][0], environment
 
 
 
+
+@jax.jit
 def monte_carlo_tree_search(params, observation, action):
     network = MuZeroNet()
     (representation_params, _, prediction_params) = params
@@ -209,28 +212,29 @@ def monte_carlo_tree_search(params, observation, action):
     return policy, value, environment
 
 
+@jax.jit
 def add_item(i, data):
-  current_games, time_step, env_id, observation, action, policy, value, reward = data
+  current_games, time_steps, env_id, observation, action, policy, value, reward = data
   id = env_id[i]
-  current_games.observations = current_games.observations.at[id, time_step].set(observation[i].transpose(1, 2, 0))
-  current_games.actions = current_games.actions.at[id, time_step].set(action[i])
-  current_games.policies = current_games.policies.at[id, time_step].set(policy[i])
-  current_games.values = current_games.values.at[id, time_step].set(value[i])
-  current_games.rewards = current_games.rewards.at[id, time_step].set(reward[i])
-  return current_games, time_step, env_id, observation, action, policy, value, reward
+  step = time_steps[id]
+  current_games.observations = current_games.observations.at[id, step].set(observation[i].transpose(1, 2, 0))
+  current_games.actions = current_games.actions.at[id, step].set(action[i])
+  current_games.policies = current_games.policies.at[id, step].set(policy[i])
+  current_games.values = current_games.values.at[id, step].set(value[i])
+  current_games.rewards = current_games.rewards.at[id, step].set(reward[i])
+  time_steps = time_steps.at[id].set(time_steps[id] + 1)
+  return current_games, time_steps, env_id, observation, action, policy, value, reward
 
 
 def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
-    step = i + 32
-    (key, params, env_handle, recv, send, current_games) = p
+    (key, params, env, current_games, steps) = p
     # if self.steps == 1:
     #   self.network.set_device(self.device)
     #   self.target_network.set_device(self.device)
-    # import code; code.interact(local=dict(globals(), **locals()))
-    _, (second_observation, reward, is_done, info) = recv(env_handle)
+    second_observation, reward, is_done, info = env.recv()
 
-    get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], step - 32, 32, axis=0).squeeze(), (None, 0))
-    get_observations = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.observations[index], step - 32, 32, axis=0), (None, 0))
+    get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0))
+    get_observations = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0))
     past_actions = jnp.expand_dims(get_actions(current_games, info['env_id']), axis=1)
     past_observations = jnp.expand_dims(get_observations(current_games, info['env_id']), axis=1)
 
@@ -239,11 +243,10 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # import code; code.interact(local=dict(globals(), **locals()))
     policy, value, environment = monte_carlo_fn(params, past_observations, past_actions)
     key, subkey = jax.random.split(key)
-    action = jax.random.categorical(subkey, policy)
-    # import code; code.interact(local=dict(globals(), **locals()))
+    action = jax.random.categorical(subkey, policy, axis=1)
 
     # second_observation, reward, is_done, _ = env.step(action)
-    new_handle = send(env_handle, jnp.ones(info['env_id'].shape, dtype=jnp.int32), info['env_id'])
+    env.send(np.array(action), info['env_id'])
     # import code; code.interact(local=dict(globals(), **locals()))
 
     # reward += reward
@@ -259,17 +262,24 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # cpus = jax.devices("cpu")
     # import code; code.interact(local=dict(globals(), **locals()))
     # current_game_buffer.append((jnp.array(second_observation) / 255, action, policy, value, reward))
-    current_games, _, _, _, _, _, _, _ = lax.fori_loop(0, 16, add_item, (current_games, step, info['env_id'], second_observation, action, policy, value, reward))
-    return (key, params, new_handle, recv, send, current_games)#, game_reward
+    current_games, steps, _, _, _, _, _, _ = lax.fori_loop(0, current_games.games, add_item, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
+    return (key, params, env, current_games, steps)#, game_reward
 
 # @jax.jit
-def play_game(key, params, self_play_memories, env_handle, recv, send):
+def play_game(key, params, self_play_memories, env):
     # TODO set 200 per environment
     # (key, params, new_handle, recv, send, self_play_memories) = lax.fori_loop(0, 200, play_step, (key, params, env_handle, recv, send, self_play_memories))
     # return key, current_game_buffer, env_handle
+    jax.default_device = jax.devices("cpu")[0]
+    steps = jnp.zeros(self_play_memories.games, dtype=jnp.int32) + 32
+    jax.default_device = None
+    print("PLAYING GAMES")
 
-    for _ in range(200):
+    i = 0
+    while(jnp.any(steps < 200)):
     #     # TODO backfill from previous memories
-        (key, params, new_handle, recv, send, self_play_memories) = play_step(0, (key, params, env_handle, recv, send, self_play_memories))
-    return key, self_play_memories, env_handle
+        (key, params, new_handle, self_play_memories, steps) = play_step(i, (key, params, env, self_play_memories, steps))
+        i += 1
+    all_same = True
+    return key, self_play_memories, env
     # return key, current_game_buffer

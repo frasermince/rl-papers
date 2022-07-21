@@ -1,16 +1,17 @@
 import jax.numpy as np
 from jax import random
 from model import scatter
+from collections.abc import Sequence
 
 # TODO Add per game memory for chess and go
 
-def memory_flatten(memory):
+def game_memory_flatten(memory):
     return ((memory.observations, memory.actions, memory.rewards, memory.values, memory.policies, memory.priorities),
-        (memory.rollout_size, memory.n_step, memory.discount_rate, memory.length))
+        (memory.rollout_size, memory.n_step, memory.discount_rate))
 
-def memory_unflatten(aux, children):
+def game_memory_unflatten(aux, children):
     (observations, actions, rewards, values, policies, priorities) = children
-    (rollout_size, n_step, discount_rate, length) = aux
+    (rollout_size, n_step, discount_rate) = aux
     return MuZeroMemory(length, observations=observations, actions=actions, rewards=rewards, values=values, policies=policies, priorities=priorities, n_step=n_step, discount_rate=discount_rate)
 
 def self_play_flatten(memory):
@@ -29,7 +30,7 @@ def self_play_unflatten(aux, children):
     return memory
 
 
-class SelfPlayMemory:
+class SelfPlayMemory(Sequence):
     def __init__(self, games):
         self.games = games
         self.observations = np.zeros((games, 232, 96, 96, 3))
@@ -38,10 +39,78 @@ class SelfPlayMemory:
         self.values = np.zeros((games, 232, 1))
         self.policies = np.zeros((games, 232, 18))
 
+    def __getitem__(self, i):
+        # import code; code.interact(local=dict(globals(), **locals()))
+        return (self.observations[i], self.actions[i], self.rewards[i], self.values[i], self.policies[i])
+
+    def __len__(self):
+        return self.games
+
+
 
 class MuZeroMemory:
-    def __init__(self, length, observations = [], actions = [], rewards = [], values = [], policies = [], priorities = [], rollout_size=5, n_step=10, discount_rate=0.995):
+    def __init__(self, length, games=[], rollout_size=5, n_step=10, discount_rate=0.995):
         self.length = length
+        self.games = games
+        self.rollout_size = rollout_size
+        self.n_step = n_step
+        self.discount_rate = discount_rate
+
+
+    def append(self, self_play_memory):
+        for i in range(len(self_play_memory)):
+            game_memory = GameMemory(rollout_size=self.rollout_size, n_step=self.n_step, discount_rate=self.discount_rate)
+            game_memory.add_from_self_play(self_play_memory[i])
+            self.games.append(game_memory)
+            if len(self.games) > self.length:
+                self.games.pop(0)
+
+    def item_count(self):
+        return len(self.games)
+
+    def update_priorities(self, priorities, game_indices, step_indices):
+        return self.games[game_indices].update_priorities(priorities, step_indices)
+
+    def sample(self, key, n):
+        key, subkey = random.split(key)
+        random_games = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n)).squeeze()
+
+        observation_result = []
+        action_result = []
+        reward_result = []
+        value_result = []
+        policy_result = []
+        step_index_result = []
+        game_index_result = []
+        priority_result = []
+
+        for random_game in random_games:
+            subkey, result_dict = self.games[random_game].sample(subkey, 1)
+
+            observation_result.append(result_dict["observations"])
+            action_result.append(result_dict["actions"])
+            reward_result.append(result_dict["rewards"])
+            value_result.append(result_dict["values"])
+            policy_result.append(result_dict["policies"])
+            step_index_result.append(result_dict["index"])
+            game_index_result.append(random_game)
+            priority_result.append(result_dict["priority"])
+
+        return key, {
+            "observations": np.stack(observation_result),
+            "actions": np.stack(action_result),
+            "rewards": np.stack(reward_result),
+            "values": np.stack(value_result),
+            "policies": np.stack(policy_result),
+            "step_indices": np.array(step_index_result),
+            "game_indices": np.array(game_index_result),
+            "priority": np.stack(priority_result),
+        }
+
+
+
+class GameMemory:
+    def __init__(self, observations = [], actions = [], rewards = [], values = [], policies = [], priorities = [], rollout_size=5, n_step=10, discount_rate=0.995):
         self.observations = observations
         self.actions = actions
         self.rewards = rewards
@@ -55,14 +124,16 @@ class MuZeroMemory:
     def last_n(self, n):
         return {"observations": self.observations[-n:], "actions": self.actions[-n:], "rewards": self.rewards[-n:], "values": self.values[-n:], "policies": self.policies[-n:]}
 
-    def append_multiple(self, array):
-        for i in range(len(array.observations)):
-            self.observations.append(array.observations[i])
-            self.actions.append(array.actions[i])
-            self.rewards.append(array.rewards[i])
-            self.values.append(array.values[i].item())
-            self.policies.append(array.policies[i])
-            self.priorities.append(abs(array.values[i].item() - self.compute_nstep_value(len(self.priorities), array.values[i]).item()))
+    def add_from_self_play(self, data):
+        observations, actions, rewards, values, policies = data
+        length = observations.shape[0]
+        self.observations = observations
+        self.actions = actions.squeeze()
+        self.rewards = rewards.squeeze()
+        self.values = values.squeeze()
+        self.policies = policies.squeeze()
+        # self.priorities.append(abs(values[i] - self.compute_nstep_value(length, values[i])))
+        self.priorities = (abs(values - self.compute_nstep_value(length, values))).squeeze()
 
     def append(self, item):
         (observation, action, policy, value, reward) = item
@@ -74,14 +145,7 @@ class MuZeroMemory:
         # priority = abs(value.item() - self.compute_nstep_value(len(self.priorities), value).item())
         priority = abs(value - self.compute_nstep_value(len(self.priorities), value))
         self.priorities.append(priority)
-        if (len(self.observations) > self.length):
-            self.observations.pop(0)
-            self.actions.pop(0)
-            self.rewards.pop(0)
-            self.values.pop(0)
-            self.policies.pop(0)
-            self.priorities.pop(0)
-
+        
     def update_priorities(self, priorities, indices):
       pr = np.array(self.priorities)
       scatter(pr, 0, indices, priorities.squeeze())
@@ -102,9 +166,8 @@ class MuZeroMemory:
     def access_slice(self, array, start, end):
         return array[start:end]
 
-    # TODO investigate vpmapping
-    def sample(self, n, key):
-
+    # TODO investigate vmapping
+    def sample(self, key, n):
         available_indices = list(range(0, len(self.observations)))
         starting_index = 32
         available_indices = np.stack(available_indices[starting_index : -(self.rollout_size + self.n_step)])
@@ -118,42 +181,29 @@ class MuZeroMemory:
           priorities += 1 / len(priorities)
 
         key, subkey = random.split(key)
-        indices = random.choice(subkey, available_indices, shape=(1, n), p=priorities).squeeze()
-        observation_result = []
-        action_result = []
-        reward_result = []
-        value_result = []
-        policy_result = []
-        index_result = []
-        priority_result = []
+        # import code; code.interact(local=dict(globals(), **locals()))
+        index = random.choice(subkey, available_indices, p=priorities).squeeze()
+        
+        # for count, i in enumerate(indices):
+        k_step_actions = []
+        k_step_rewards = []
+        k_step_values = []
+        k_step_policies = []
+        for k_step in range(self.rollout_size + 1):
+            k_step_actions.append(np.array(self.actions[index - 32 + k_step : index + k_step]))
+            k_step_rewards.append(self.rewards[index + k_step])
 
-        for count, i in enumerate(indices):
-            k_step_actions = []
-            k_step_rewards = []
-            k_step_values = []
-            k_step_policies = []
-            for k_step in range(self.rollout_size + 1):
-              k_step_actions.append(np.array(self.actions[i - 32 + k_step : i + k_step]))
-              k_step_rewards.append(self.rewards[i + k_step])
-
-              k_step_values.append(self.compute_nstep_value(i + k_step, self.rewards[i + k_step]) - self.values[i + k_step])
-              k_step_policies.append(self.policies[i + k_step])
-            observation_result.append(np.array(self.observations[i - 32 : i]))
-            action_result.append(np.stack(k_step_actions))
-            reward_result.append(np.array(k_step_rewards))
-            value_result.append(np.array(k_step_values))
-            policy_result.append(np.array(k_step_policies))
-            index_result.append(indices)
-            priority_result.append(priorities[count])
+            k_step_values.append(self.compute_nstep_value(index + k_step, self.rewards[index + k_step]) - self.values[index + k_step])
+            k_step_policies.append(self.policies[index + k_step])
 
         return key, {
-            "observations": np.stack(observation_result),
-            "actions": np.stack(action_result),
-            "rewards": np.stack(reward_result),
-            "values": np.stack(value_result),
-            "policies": np.stack(policy_result),
-            "indices": np.array(indices),
-            "priority": np.stack(priority_result),
+            "observations": np.array(self.observations[index - 32 : index]),
+            "actions": np.stack(k_step_actions),
+            "rewards": np.array(k_step_rewards),
+            "values": np.array(k_step_values),
+            "policies": np.array(k_step_policies),
+            "index": index,
+            "priority": priorities[index],
         }
 
     def item_count(self):
