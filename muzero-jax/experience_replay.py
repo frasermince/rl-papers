@@ -36,18 +36,55 @@ def self_play_unflatten(aux, children):
 class SelfPlayMemory(Sequence):
     def __init__(self, games):
         self.games = games
-        self.observations = np.zeros((games, 232, 96, 96, 3))
-        self.actions = np.zeros((games, 232, 1))
-        self.rewards = np.zeros((games, 232, 1))
-        self.values = np.zeros((games, 232, 1))
-        self.policies = np.zeros((games, 232, 18))
+
+    def populate(self):
+        self.observations = np.zeros((self.games, 232, 96, 96, 3))
+        self.actions = np.zeros((self.games, 232, 1))
+        self.rewards = np.zeros((self.games, 232, 1))
+        self.values = np.zeros((self.games, 232, 1))
+        self.policies = np.zeros((self.games, 232, 18))
+
+    def set_steps(self, i, data):
+        all_steps, finished_steps = data
+        return all_steps.at[finished_steps[i]].set(32)
+
+    @jax.jit
+    def output_game_buffer(self, finished_steps, all_steps, starting_observations):
+        finished_steps = finished_steps[0 : 8]
+        finished_buffer = SelfPlayMemory(self.games)
+        finished_buffer.observations = jax.vmap(lambda index: self.observations[index])(finished_steps)
+        finished_buffer.actions = jax.vmap(lambda index: self.actions[index])(finished_steps)
+        finished_buffer.rewards = jax.vmap(lambda index: self.rewards[index])(finished_steps)
+        finished_buffer.values = jax.vmap(lambda index: self.values[index])(finished_steps)
+        finished_buffer.policies = jax.vmap(lambda index: self.policies[index])(finished_steps)
+        cpus = jax.devices("cpu")
+        finished_buffer = jax.device_put(finished_buffer, cpus[0])
+
+        self.observations = self.observations.at[finished_steps].set(starting_observations[0])
+        self.actions = self.actions.at[finished_steps].set(0)
+        self.rewards = self.rewards.at[finished_steps].set(0)
+        self.values = self.observations.at[finished_steps].set(0)
+        self.policies = self.policies.at[finished_steps].set(0)
+
+        # self.actions = vmap(lambda index: self.actions[index])(finished_steps)
+        # self.rewards = vmap(lambda index: self.rewards[index])(finished_steps)
+        # self.values = vmap(lambda index: self.values[index])(finished_steps)
+        # self.policies = vmap(lambda index: self.policies[index])(finished_steps)
+
+        for i in range(8):
+            all_steps = self.set_steps(i, (all_steps, finished_steps))
+        # all_steps, _ = lax.fori_loop(0, 8, self.set_steps, (all_steps, finished_steps))
+        # all_steps = jax.vmap(lambda index: all_steps.at[index].set(32))(finished_steps)
+        
+        return finished_buffer, all_steps
+        
 
     def __getitem__(self, i):
         # import code; code.interact(local=dict(globals(), **locals()))
         return (self.observations[i], self.actions[i], self.rewards[i], self.values[i], self.policies[i])
 
     def __len__(self):
-        return self.games
+        return self.actions.shape[0]
 
 
 
