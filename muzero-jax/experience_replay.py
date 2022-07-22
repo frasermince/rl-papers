@@ -1,7 +1,10 @@
 import jax.numpy as np
+import jax.lax as lax
 from jax import random
+import jax
 from model import scatter
 from collections.abc import Sequence
+from functools import partial
 
 # TODO Add per game memory for chess and go
 
@@ -12,7 +15,7 @@ def game_memory_flatten(memory):
 def game_memory_unflatten(aux, children):
     (observations, actions, rewards, values, policies, priorities) = children
     (rollout_size, n_step, discount_rate) = aux
-    return MuZeroMemory(length, observations=observations, actions=actions, rewards=rewards, values=values, policies=policies, priorities=priorities, n_step=n_step, discount_rate=discount_rate)
+    return GameMemory(observations=observations, actions=actions, rewards=rewards, values=values, policies=policies, priorities=priorities, n_step=n_step, discount_rate=discount_rate)
 
 def self_play_flatten(memory):
     return ((memory.observations, memory.actions, memory.rewards, memory.values, memory.policies),
@@ -71,40 +74,131 @@ class MuZeroMemory:
     def update_priorities(self, priorities, game_indices, step_indices):
         return self.games[game_indices].update_priorities(priorities, step_indices)
 
+    def compute_nstep_value(self, i, data):
+        (starting_index, value, rewards, n_step) = data
+        update_value = lambda: value + rewards[starting_index + n_step + 1] * self.discount_rate ** n_step
+        value = lax.cond( starting_index + n_step + 1 < rewards.shape[0], update_value, lambda: value)
+        return (starting_index, value, rewards, n_step)
+
+
+    def sample_from_game(self, observations, actions, values, policies, priorities, rewards, game_index, rollout_size, n_step, key):
+        available_indices = list(range(0, observations.shape[0]))
+        starting_index = 32
+        available_indices = np.stack(available_indices[starting_index : -(rollout_size + n_step)])
+        priorities = np.stack(priorities[starting_index : -(rollout_size + n_step)])
+        priorities = np.where(priorities == 0 , 1, priorities)
+        sum = np.sum(priorities)
+        # TODO check paper to understand why this is happening
+        priorities = lax.cond(np.all(sum == 0), lambda: priorities + (1 / priorities.shape[0]), lambda: priorities / sum)
+        # if sum != 0:
+        #   priorities /= sum
+        # else:
+        #   priorities += 1 / len(priorities)
+
+        index = random.choice(key, available_indices, p=priorities).squeeze()
+
+        # result["observations"].append observation_result.append(result_dict["observations"])
+        # action_result.append(result_dict["actions"])
+        # reward_result.append(result_dict["rewards"])
+        # value_result.append(result_dict["values"])
+        # policy_result.append(result_dict["policies"])
+        # step_index_result.append(result_dict["index"])
+        # game_index_result.append(random_game)
+        # priority_result.append(result_dict["priority"])
+        k_step_actions = []
+        k_step_rewards = []
+        k_step_values = []
+        k_step_policies = []
+        for k_step in range(rollout_size + 1):
+            k_step_actions.append(lax.dynamic_slice_in_dim(actions, index - 32 + k_step, 32))
+            k_step_rewards.append(rewards[index + k_step])
+            _, k_step_value, _, _= lax.fori_loop(0, n_step - 1, self.compute_nstep_value, (index + k_step, rewards[index + k_step] - values[index + k_step], rewards, n_step))
+            k_step_values.append(k_step_value)
+            # k_step_values.append(compute_nstep_value((index + k_step, rewards[index + k_step]) - values[index + k_step], rewards, n_step))
+            k_step_policies.append(policies[index + k_step])
+
+        
+        observations = lax.dynamic_slice_in_dim(observations, index - 32, 32)
+        return (np.array(observations), np.stack(k_step_actions), np.array(k_step_rewards), np.array(k_step_values), np.array(k_step_policies), game_index, index, priorities[index])
+        # return key, {
+        #     "observations": np.array(self.observations[index - 32 : index]),
+        #     "actions": np.stack(k_step_actions),
+        #     "rewards": np.array(k_step_rewards),
+        #     "values": np.array(k_step_values),
+        #     "policies": np.array(k_step_policies),
+        #     "index": index,
+        #     "priority": priorities[index],
+        # }
+
+
     def sample(self, key, n):
+                
         key, subkey = random.split(key)
-        random_games = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n)).squeeze()
+        random_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n)).squeeze()
+        observations = []
+        actions = []
+        values = []
+        policies = []
+        priorities = []
+        rewards = []
+        step_indices = []
+        game_indices = []
+        for i in random_indices:
+            observations.append(self.games[i].observations)
+            actions.append(self.games[i].actions)
+            values.append(self.games[i].values)
+            policies.append(self.games[i].policies)
+            priorities.append(self.games[i].priorities)
+            rewards.append(self.games[i].rewards)
+            game_indices.append(i)
 
-        observation_result = []
-        action_result = []
-        reward_result = []
-        value_result = []
-        policy_result = []
-        step_index_result = []
-        game_index_result = []
-        priority_result = []
+        # observation_result = []
+        # action_result = []
+        # reward_result = []
+        # value_result = []
+        # policy_result = []
+        # step_index_result = []
+        # game_index_result = []
+        # priority_result = []
+        keys = random.split(key, num=n + 1)
+        key = keys[0]
+        keys = keys[1:]
 
-        for random_game in random_games:
-            subkey, result_dict = self.games[random_game].sample(subkey, 1)
+        game_sample = jax.vmap(self.sample_from_game, in_axes=(0, 0, 0, 0, 0, 0, 0, None, None, 0))
+        observations, actions, rewards, values, policies, game_index, step_indices, priorities = game_sample(
+            np.stack(observations),
+            np.stack(actions),
+            np.stack(values),
+            np.stack(policies),
+            np.stack(priorities),
+            np.stack(rewards),
+            np.stack(game_indices),
+            self.rollout_size,
+            self.n_step,
+            keys
+        )
 
-            observation_result.append(result_dict["observations"])
-            action_result.append(result_dict["actions"])
-            reward_result.append(result_dict["rewards"])
-            value_result.append(result_dict["values"])
-            policy_result.append(result_dict["policies"])
-            step_index_result.append(result_dict["index"])
-            game_index_result.append(random_game)
-            priority_result.append(result_dict["priority"])
+        # for random_game in random_games:
+        #     subkey, result_dict = self.games[random_game].sample(subkey, 1)
+
+        #     observation_result.append(result_dict["observations"])
+        #     action_result.append(result_dict["actions"])
+        #     reward_result.append(result_dict["rewards"])
+        #     value_result.append(result_dict["values"])
+        #     policy_result.append(result_dict["policies"])
+        #     step_index_result.append(result_dict["index"])
+        #     game_index_result.append(random_game)
+        #     priority_result.append(result_dict["priority"])
 
         return key, {
-            "observations": np.stack(observation_result),
-            "actions": np.stack(action_result),
-            "rewards": np.stack(reward_result),
-            "values": np.stack(value_result),
-            "policies": np.stack(policy_result),
-            "step_indices": np.array(step_index_result),
-            "game_indices": np.array(game_index_result),
-            "priority": np.stack(priority_result),
+            "observations": observations,
+            "actions": actions,
+            "rewards": rewards,
+            "values": values,
+            "policies": policies,
+            "step_indices": step_indices,
+            "game_indices": np.stack(game_indices),
+            "priority": priorities,
         }
 
 

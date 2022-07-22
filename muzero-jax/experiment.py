@@ -267,7 +267,9 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     # num_devices = jax.device_count()
     # global_batch_size = self.config.training.batch_size
     while True:
+      print("BEFORE SAMPLE")
       self.key, memories = self.memory.sample(self.key, self.batch_size)
+      print("AFTER SAMPLE")
       observations = np.reshape(memories["observations"], (self.training_device_count, int(self.batch_size / self.training_device_count), 32, 96, 96, 3))
       actions = np.reshape(memories["actions"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6, 32))
       policies = np.reshape(memories["policies"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6, 18))

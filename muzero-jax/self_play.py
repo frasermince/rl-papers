@@ -185,15 +185,10 @@ def perform_simulations(params, hidden_state, policy):
         # self.prediction_network = prediction_network
         # self.dynamics_network = dynamics_network
 
-
-
   for simulation in range(50):
       environment = monte_carlo_simulation(environment, index=jnp.array(0))
   # TODO confirm that we don't need to divide by the visit count
   return visit_policy(environment), environment["q_val"][0], environment
-
-
-
 
 @jax.jit
 def monte_carlo_tree_search(params, observation, action):
@@ -273,7 +268,6 @@ def play_game(key, params, self_play_memories, env):
     jax.default_device = jax.devices("cpu")[0]
     steps = jnp.zeros(self_play_memories.games, dtype=jnp.int32) + 32
     jax.default_device = None
-    print("PLAYING GAMES")
 
     i = 0
     while(jnp.any(steps < 200)):
