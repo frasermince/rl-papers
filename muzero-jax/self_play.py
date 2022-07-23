@@ -226,6 +226,9 @@ def add_item(i, data):
 
 
 # TODO explore if steps are recorded correctly due to async gym
+monte_carlo_fn = jax.pmap(lambda *x: jax.vmap(lambda *y: monte_carlo_tree_search(*y), (None, 0, 0))(*x), in_axes=((None, 0, 0)), devices=jax.devices()[0: 4])
+get_actions = jax.vmap(lambda current_games, index, steps: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0, None))
+get_observations = jax.vmap(lambda current_games, index, steps: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0, None))
 def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     (key, params, env, current_games, steps) = p
     # if self.steps == 1:
@@ -233,15 +236,14 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     #   self.target_network.set_device(self.device)
     second_observation, reward, is_done, info = env.recv()
 
-    get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0))
-    get_observations = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0))
-    past_actions = jnp.expand_dims(get_actions(current_games, info['env_id']), axis=1)
-    past_observations = jnp.expand_dims(get_observations(current_games, info['env_id']), axis=1)
+    # get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0))
+    # get_observations = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0))
+    past_actions = jnp.expand_dims(get_actions(current_games, info['env_id'], steps), axis=1)
+    past_observations = jnp.expand_dims(get_observations(current_games, info['env_id'], steps), axis=1)
     past_observations = np.reshape(past_observations, (4, int(past_observations.shape[0] / 4), 1, 32, 96, 96, 3))
     past_actions = np.reshape(past_actions, (4, int(past_actions.shape[0] / 4), 1, 32))
 
     # TODO use 0 for past_observations upon changing to multigame memory
-    monte_carlo_fn = jax.pmap(lambda *x: jax.vmap(lambda *y: monte_carlo_tree_search(*y), (None, 0, 0))(*x), in_axes=((None, 0, 0)), devices=jax.devices()[0: 4])
     # import code; code.interact(local=dict(globals(), **locals()))
     # print("BEFORE SEARCH")
     policy, value, _ = monte_carlo_fn(params, past_observations, past_actions)
@@ -291,15 +293,14 @@ def play_game(key, params, self_play_memories, env, steps):
     # return key, current_game_buffer, env_handle
     # jax.default_device = jax.devices("cpu")[0]
     # jax.default_device = None
+      i = 0
+      halting_steps = 232
+      # while(jnp.any(steps < 40)):
+      while((steps >= halting_steps).sum() < 8):
+      #     # TODO backfill from previous memories
+          (key, params, env, self_play_memories, steps) = play_step(i, (key, params, env, self_play_memories, steps))
+          i += 1
 
-    i = 0
-    halting_steps = 232
-    # while(jnp.any(steps < 40)):
-    while((steps >= halting_steps).sum() < 8):
-    #     # TODO backfill from previous memories
-        (key, params, env, self_play_memories, steps) = play_step(i, (key, params, env, self_play_memories, steps))
-        i += 1
-
-    finished_indices = np.argwhere(steps >= halting_steps).squeeze()
-    return key, self_play_memories, steps, finished_indices
-    # return key, current_game_buffer
+      finished_indices = np.argwhere(steps >= halting_steps).squeeze()
+      return key, self_play_memories, steps, finished_indices
+      # return key, current_game_buffer

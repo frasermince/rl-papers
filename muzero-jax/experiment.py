@@ -32,75 +32,85 @@ class MuzeroExperiment(experiment.AbstractExperiment):
 
   def __init__(self, mode, init_rng, config, learning_rate=1e-4, normalize_advantages=False, batch_size=128, rollout_size=5):
       super(MuzeroExperiment, self).__init__(mode=mode, init_rng=init_rng)
-      self.mode = mode
-      self.init_rng = init_rng
-      self.config = config
 
-      self._params = None
-      self._state = None
-      self._opt_state = None
+      with jax.default_device(jax.devices()[7]):
+        self.mode = mode
+        self.init_rng = init_rng
+        self.config = config
 
-      self.normalize_advantages = normalize_advantages
-      self.game_reward = 0
-      self.eps = np.finfo(np.float32).eps.item()
-      self.steps_to_train = 4
-      self.rollout_size = 5
-      self.discount_factor = 0.99
-      self.reward = 0
-      self.games = 0
-      self.epoch_length = 20000
-      self.batch_size = batch_size
-      self.lr_init = 0.05
-      self.lr_decay_rate = 0.1
-      self.lr_decay_steps = 350e3
-      self.n_step = 10
-      self.last_ten = Memory(10)
-      self.last_hundred = Memory(100)
-      self.rollout_size = 5
-      self.key = random.PRNGKey(0)
-      self.network = MuZeroNet()
-      self.memory = MuZeroMemory(125000, rollout_size=rollout_size)
-      self.multiple = 8
-      self.num_envs = self.multiple * 16#176
-      self.env_batch_size = int(self.num_envs / 4)
-      self.starting_memories = SelfPlayMemory(self.num_envs)
-      self.starting_memories.populate()
-      register_pytree_node(
-          GameMemory,
-          experience_replay.game_memory_flatten,
-          experience_replay.game_memory_unflatten
-      )
-      register_pytree_node(
-          SelfPlayMemory,
-          experience_replay.self_play_flatten,
-          experience_replay.self_play_unflatten
-      )
-      self._train_input = None
-      self.game_count = 0
-      
-      self.env = envpool.make("Pong-v5", env_type="gym", num_envs=self.num_envs, batch_size=self.env_batch_size, img_height=96, img_width=96, gray_scale=False, stack_num=1)
-      self.env.async_reset()
-      self.env_handle, self.recv, self.send, _ = self.env.xla()
+        self._params = None
+        self._state = None
+        self._opt_state = None
 
-      self.initial_observation = self.env.reset()
-      self.starting_policy = jnp.ones(18) / 18
-      self._update_func = jax.pmap(self._update_func, axis_name='i',
-                                 donate_argnums=(1), in_axes=(None, None, (0, 0, 0, 0, 0, 0), None, None), out_axes=(None, None, 0, 0), devices=jax.devices()[4: 8])
+        self.normalize_advantages = normalize_advantages
+        self.game_reward = 0
+        self.eps = np.finfo(np.float32).eps.item()
+        self.steps_to_train = 4
+        self.rollout_size = 5
+        self.discount_factor = 0.99
+        self.reward = 0
+        self.games = 0
+        self.epoch_length = 20000
+        self.batch_size = batch_size
+        self.lr_init = 0.05
+        self.lr_decay_rate = 0.1
+        self.lr_decay_steps = 350e3
+        self.n_step = 10
+        self.last_ten = Memory(10)
+        self.last_hundred = Memory(100)
+        self.rollout_size = 5
+        self.key = random.PRNGKey(0)
+        self.network = MuZeroNet()
+        self.memory = MuZeroMemory(125000, rollout_size=rollout_size)
+        self.multiple = 8
+        self.num_envs = self.multiple * 16#176
+        self.env_batch_size = int(self.num_envs / 4)
+
+        with jax.default_device(jax.devices()[0]):
+          self.starting_memories = SelfPlayMemory(self.num_envs)
+          self.starting_memories.populate()
+        register_pytree_node(
+            GameMemory,
+            experience_replay.game_memory_flatten,
+            experience_replay.game_memory_unflatten
+        )
+        register_pytree_node(
+            SelfPlayMemory,
+            experience_replay.self_play_flatten,
+            experience_replay.self_play_unflatten
+        )
+        # register_pytree_node(
+        #     MuZeroMemory,
+        #     experience_replay.muzero_flatten,
+        #     experience_replay.muzero_unflatten
+        # )
+        self._train_input = None
+        self.game_count = 0
+        
+        self.env = envpool.make("Pong-v5", env_type="gym", num_envs=self.num_envs, batch_size=self.env_batch_size, img_height=96, img_width=96, gray_scale=False, stack_num=1)
+        self.env.async_reset()
+        self.env_handle, self.recv, self.send, _ = self.env.xla()
+
+        with jax.default_device(jax.devices()[0]):
+          self.initial_observation = self.env.reset()
+          self.initial_observation = jnp.transpose(jnp.array(self.initial_observation), (0, 2, 3, 1))
+          starting_policy = jnp.ones(18) / 18
+          for i in range(32):
+            self.starting_memories.observations = self.starting_memories.observations.at[:, i].set(self.initial_observation[0])
+            self.starting_memories.policies = self.starting_memories.policies.at[:, i].set(starting_policy)
+            # self.starting_memories.append((self.initial_observation[0], 0, starting_policy, jnp.broadcast_to(jnp.array(1.0), (1)), 0))
+
+        self._update_func = jax.pmap(self._update_func, axis_name='i',
+                                  donate_argnums=(1), in_axes=(None, None, (0, 0, 0, 0, 0, 0), None, None), out_axes=(None, None, 0, 0), devices=jax.devices()[4: 8])
 
 
-      self.initial_observation = jnp.transpose(jnp.array(self.initial_observation), (0, 2, 3, 1))
-      starting_policy = jnp.ones(18) / 18
-      for i in range(32):
-        self.starting_memories.observations = self.starting_memories.observations.at[:, i].set(self.initial_observation[0])
-        self.starting_memories.policies = self.starting_memories.policies.at[:, i].set(starting_policy)
-        # self.starting_memories.append((self.initial_observation[0], 0, starting_policy, jnp.broadcast_to(jnp.array(1.0), (1)), 0))
-
-      self.entropy_scaling = 0.01
-      self.automatic_optimization = False
-      self.target_update_rate = 1000
-      self._params = None
-      self._target_params = None
-      self.training_device_count = int(jax.device_count() / 2)
+        
+        self.entropy_scaling = 0.01
+        self.automatic_optimization = False
+        self.target_update_rate = 1000
+        self._params = None
+        self._target_params = None
+        self.training_device_count = int(jax.device_count() / 2)
 
   def self_play(self, key, params, game_buffer, steps):
       key, game_buffer, steps, finished_indices  = play_game(key, params, game_buffer, self.env, steps)
@@ -112,18 +122,26 @@ class MuzeroExperiment(experiment.AbstractExperiment):
 
   
   def play_games(self):
-    key = self.key
-    steps = jnp.zeros(self.starting_memories.games, dtype=jnp.int32) + 32
-    game_buffer = self.starting_memories
-    while(True):
-      (a, b, c) = self._target_params
-      params = (a.copy({}), b.copy({}), c.copy({}))
-      key, game_buffer, steps, finished_indices  = play_game(key, params, game_buffer, self.env, steps)
-      # key, game_buffer, self.env_handle = play_game(key, params, starting_memory, handle, recv, send)
-      finished_game_buffer, steps = game_buffer.output_game_buffer(finished_indices, steps, self.initial_observation)
+    with jax.default_device(jax.devices()[0]):
+      key = jax.device_put(self.key, jax.devices()[0])
+      steps = jnp.zeros(self.starting_memories.games, dtype=jnp.int32) + 32
+      game_buffer = self.starting_memories
+      # finished_game_buffer, _ = game_buffer.output_game_buffer(np.array(range(game_buffer.games)), np.zeros(game_buffer.games), self.initial_observation, amount_to_add=None)
+      cpu = jax.devices("cpu")[0]
+      # finished_game_buffer = jax.device_put(finished_game_buffer, cpu)
+      # with jax.default_device(cpu):
+      #   self.memory.append(finished_game_buffer)
+      while(True):
+        (a, b, c) = self._target_params
+        params = (a.copy({}), b.copy({}), c.copy({}))
+        key, game_buffer, steps, finished_indices  = play_game(key, params, game_buffer, self.env, steps)
+        # key, game_buffer, self.env_handle = play_game(key, params, starting_memory, handle, recv, send)
+        finished_game_buffer, steps = game_buffer.output_game_buffer(finished_indices, steps, self.initial_observation)
 
-      self.memory.append(finished_game_buffer)
-      finished_game_buffer = None
+        with jax.default_device(cpu):
+          finished_game_buffer = jax.device_put(finished_game_buffer, cpu)
+          self.memory.append(finished_game_buffer)
+        finished_game_buffer = None
 
 
   def train_loop(
@@ -177,25 +195,26 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     self_play_thread = Thread(target=self.play_games)
     self_play_thread.start()
 
-    with jl_utils.log_activity("training loop"):
-      while self.should_run_step(state.global_step, config):
-        with jax.profiler.StepTraceAnnotation(
-            "train", step_num=state.global_step):
-          scalar_outputs = self.step(
-              global_step=state.global_step, rng=step_key, writer=writer)
+    with jax.default_device(jax.devices()[7]):
+      with jl_utils.log_activity("training loop"):
+        while self.should_run_step(state.global_step, config):
+          with jax.profiler.StepTraceAnnotation(
+              "train", step_num=state.global_step):
+            scalar_outputs = self.step(
+                global_step=state.global_step, rng=step_key, writer=writer)
 
-          t = time.time()
-          # Update state's (scalar) global step (for checkpointing).
-          # global_step_devices will be back in sync with this after the call
-          # to next_device_state below.
-          state.global_step += 1
-          global_step_devices, (step_key, state.train_step_rng) = (
-              next_device_state(global_step_devices,
-                                state.train_step_rng,
-                                host_id_devices))
+            t = time.time()
+            # Update state's (scalar) global step (for checkpointing).
+            # global_step_devices will be back in sync with this after the call
+            # to next_device_state below.
+            state.global_step += 1
+            global_step_devices, (step_key, state.train_step_rng) = (
+                next_device_state(global_step_devices,
+                                  state.train_step_rng,
+                                  host_id_devices))
 
-        for action in periodic_actions:
-          action(t, state.global_step, scalar_outputs)
+          for action in periodic_actions:
+            action(t, state.global_step, scalar_outputs)
   #  _             _
   # | |_ _ __ __ _(_)_ __
   # | __| '__/ _` | | '_ \
@@ -229,8 +248,12 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     #TODO make sure this is right
     assert_shape(value_difference, (self.training_device_count, self.batch_size / self.training_device_count, None)) 
     value_difference = value_difference.reshape(value_difference.shape[0] * value_difference.shape[1], value_difference.shape[2])
-    for i in range(value_difference.shape[0]):
-      self.memory.update_priorities(value_difference[i, -1], game_indices[i], step_indices[i])
+    cpu = jax.devices("cpu")[0]
+    value_difference = jax.device_put(value_difference, cpu)
+
+    with jax.default_device(cpu):
+      for i in range(value_difference.shape[0]):
+        self.memory.update_priorities(value_difference[i, -1], game_indices[i], step_indices[i])
     if global_step % self.target_update_rate == 0:
           self._target_params = self._params
 
@@ -238,8 +261,6 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     return scalars
 
   def _initialize_train(self):
-
-    jax.default_device = jax.devices()[7]
     self._train_input = jl_utils.py_prefetch(self._build_train_input)
 
     total_batch_size = self.config.training.batch_size
@@ -281,17 +302,22 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     """See base class."""
     # num_devices = jax.device_count()
     # global_batch_size = self.config.training.batch_size
+    cpu = jax.devices("cpu")[0]
+    # key = jax.device_put(self.key, cpu)
+    key = self.key
+    device = jax.devices()[7]
     while True:
-      self.key, memories = self.memory.sample(self.key, self.batch_size)
-      observations = np.reshape(memories["observations"], (self.training_device_count, int(self.batch_size / self.training_device_count), 32, 96, 96, 3))
-      actions = np.reshape(memories["actions"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6, 32))
-      policies = np.reshape(memories["policies"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6, 18))
-      values = np.reshape(memories["values"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6))
-      rewards = np.reshape(memories["rewards"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6))
-      game_indices = memories["game_indices"]
-      step_indices = memories["step_indices"]
-      priorities = np.reshape(memories["priority"], (self.training_device_count, int(self.batch_size / self.training_device_count)))
-      print(observations.shape, actions.shape, policies.shape, values.shape, rewards.shape, game_indices.shape, step_indices.shape, priorities.shape)
+      with jax.default_device(device):
+        key, memories = self.memory.sample(key, self.batch_size, device)
+        observations = np.reshape(memories["observations"], (self.training_device_count, int(self.batch_size / self.training_device_count), 32, 96, 96, 3))
+        actions = np.reshape(memories["actions"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6, 32))
+        policies = np.reshape(memories["policies"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6, 18))
+        values = np.reshape(memories["values"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6))
+        rewards = np.reshape(memories["rewards"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6))
+        game_indices = np.array(memories["game_indices"])
+        step_indices = np.array(memories["step_indices"])
+        priorities = np.reshape(memories["priority"], (self.training_device_count, int(self.batch_size / self.training_device_count)))
+      # result = jax.device_put((observations, actions, policies, values, rewards, game_indices, step_indices, priorities), jax.devices()[7])
       yield (observations, actions, policies, values, rewards, game_indices, step_indices, priorities)
 
     # per_device_batch_size, ragged = divmod(global_batch_size, num_devices)

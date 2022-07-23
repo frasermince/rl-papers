@@ -21,6 +21,16 @@ def self_play_flatten(memory):
     return ((memory.observations, memory.actions, memory.rewards, memory.values, memory.policies),
         (memory.games))
 
+def muzero_flatten(memory):
+    return ((memory.games), (memory.length, memory.rollout_size, memory.n_step, memory.discount_rate))
+
+def muzero_unflatten(aux, children):
+    memory = MuZeroMemory(1)
+    memory.games = children
+    memory.length, memory.rollout_size, memory.n_step, memory.discount_rate = aux
+    return memory
+
+
 def self_play_unflatten(aux, children):
     (games) = aux
     memory = SelfPlayMemory(games)
@@ -49,16 +59,15 @@ class SelfPlayMemory(Sequence):
         return all_steps.at[finished_steps[i]].set(32)
 
     @jax.jit
-    def output_game_buffer(self, finished_steps, all_steps, starting_observations):
-        finished_steps = finished_steps[0 : 8]
+    def output_game_buffer(self, finished_steps, all_steps, starting_observations, amount_to_add = 8):
+        if amount_to_add:
+            finished_steps = finished_steps[0 : amount_to_add]
         finished_buffer = SelfPlayMemory(self.games)
         finished_buffer.observations = jax.vmap(lambda index: self.observations[index])(finished_steps)
         finished_buffer.actions = jax.vmap(lambda index: self.actions[index])(finished_steps)
         finished_buffer.rewards = jax.vmap(lambda index: self.rewards[index])(finished_steps)
         finished_buffer.values = jax.vmap(lambda index: self.values[index])(finished_steps)
         finished_buffer.policies = jax.vmap(lambda index: self.policies[index])(finished_steps)
-        cpus = jax.devices("cpu")
-        finished_buffer = jax.device_put(finished_buffer, cpus[0])
 
         self.observations = self.observations.at[finished_steps].set(starting_observations[0])
         self.actions = self.actions.at[finished_steps].set(0)
@@ -80,7 +89,6 @@ class SelfPlayMemory(Sequence):
         
 
     def __getitem__(self, i):
-        # import code; code.interact(local=dict(globals(), **locals()))
         return (self.observations[i], self.actions[i], self.rewards[i], self.values[i], self.policies[i])
 
     def __len__(self):
@@ -118,11 +126,11 @@ class MuZeroMemory:
         return (starting_index, value, rewards, n_step)
 
 
-    def sample_from_game(self, observations, actions, values, policies, priorities, rewards, game_index, rollout_size, n_step, key):
-        available_indices = list(range(0, observations.shape[0]))
+    def choice(self, priorities, key):
+        available_indices = list(range(0, priorities.shape[0]))
         starting_index = 32
-        available_indices = np.stack(available_indices[starting_index : -(rollout_size + n_step)])
-        priorities = np.stack(priorities[starting_index : -(rollout_size + n_step)])
+        available_indices = np.stack(available_indices[starting_index : -(self.rollout_size + self.n_step)])
+        priorities = np.stack(priorities[starting_index : -(self.rollout_size + self.n_step)])
         priorities = np.where(priorities == 0 , 1, priorities)
         sum = np.sum(priorities)
         # TODO check paper to understand why this is happening
@@ -132,8 +140,12 @@ class MuZeroMemory:
         # else:
         #   priorities += 1 / len(priorities)
 
+        # import code; code.interact(local=dict(globals(), **locals()))
         index = random.choice(key, available_indices, p=priorities).squeeze()
+        return index
 
+
+    def sample_from_game(self, game_index, step_index, rollout_size, n_step, device):
         # result["observations"].append observation_result.append(result_dict["observations"])
         # action_result.append(result_dict["actions"])
         # reward_result.append(result_dict["rewards"])
@@ -142,21 +154,22 @@ class MuZeroMemory:
         # step_index_result.append(result_dict["index"])
         # game_index_result.append(random_game)
         # priority_result.append(result_dict["priority"])
+        game = jax.device_put(self.games[game_index], device)
         k_step_actions = []
         k_step_rewards = []
         k_step_values = []
         k_step_policies = []
         for k_step in range(rollout_size + 1):
-            k_step_actions.append(lax.dynamic_slice_in_dim(actions, index - 32 + k_step, 32))
-            k_step_rewards.append(rewards[index + k_step])
-            _, k_step_value, _, _= lax.fori_loop(0, n_step - 1, self.compute_nstep_value, (index + k_step, rewards[index + k_step] - values[index + k_step], rewards, n_step))
+            k_step_actions.append(lax.dynamic_slice_in_dim(game.actions, step_index - 32 + k_step, 32))
+            k_step_rewards.append(game.rewards[step_index + k_step])
+            _, k_step_value, _, _= lax.fori_loop(0, n_step - 1, self.compute_nstep_value, (step_index + k_step, game.rewards[step_index + k_step] - game.values[step_index + k_step], game.rewards, n_step))
             k_step_values.append(k_step_value)
             # k_step_values.append(compute_nstep_value((index + k_step, rewards[index + k_step]) - values[index + k_step], rewards, n_step))
-            k_step_policies.append(policies[index + k_step])
+            k_step_policies.append(game.policies[step_index + k_step])
 
         
-        observations = lax.dynamic_slice_in_dim(observations, index - 32, 32)
-        return (np.array(observations), np.stack(k_step_actions), np.array(k_step_rewards), np.array(k_step_values), np.array(k_step_policies), game_index, index, priorities[index])
+        observations = lax.dynamic_slice_in_dim(game.observations, step_index - 32, 32)
+        return (np.array(observations), np.stack(k_step_actions), np.array(k_step_rewards), np.array(k_step_values), np.array(k_step_policies), game_index, step_index)
         # return key, {
         #     "observations": np.array(self.observations[index - 32 : index]),
         #     "actions": np.stack(k_step_actions),
@@ -167,11 +180,16 @@ class MuZeroMemory:
         #     "priority": priorities[index],
         # }
 
-
-    def sample(self, key, n):
+    # @jax.jit
+    def sample(self, key, n, device):
                 
         key, subkey = random.split(key)
-        random_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n)).squeeze()
+        game_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n)).squeeze()
+
+        keys = random.split(key, num=n + 1)
+        key = keys[0]
+        keys = keys[1:]
+
         observations = []
         actions = []
         values = []
@@ -179,15 +197,21 @@ class MuZeroMemory:
         priorities = []
         rewards = []
         step_indices = []
-        game_indices = []
-        for i in random_indices:
-            observations.append(self.games[i].observations)
-            actions.append(self.games[i].actions)
-            values.append(self.games[i].values)
-            policies.append(self.games[i].policies)
+        priority_result = []
+        for i in game_indices:
             priorities.append(self.games[i].priorities)
-            rewards.append(self.games[i].rewards)
-            game_indices.append(i)
+        # priorities = np.array(priorities)[choices]
+        priorities = np.array(priorities)
+        priorities = jax.device_put(priorities, device)
+        choices = jax.vmap(self.choice, (0, 0))(priorities, keys)
+
+        # for i in random_indices:
+        #     observations.append(self.games[i].observations[choices[i]])
+        #     actions.append(self.games[i].actions[choices[i]])
+        #     values.append(self.games[i].values[choices[i]])
+        #     policies.append(self.games[i].policies[choices[i]])
+        #     rewards.append(self.games[i].rewards[choices[i]])
+        #     game_indices.append(i)
 
         # observation_result = []
         # action_result = []
@@ -196,24 +220,28 @@ class MuZeroMemory:
         # policy_result = []
         # step_index_result = []
         # game_index_result = []
-        # priority_result = []
-        keys = random.split(key, num=n + 1)
-        key = keys[0]
-        keys = keys[1:]
 
-        game_sample = jax.vmap(self.sample_from_game, in_axes=(0, 0, 0, 0, 0, 0, 0, None, None, 0))
-        observations, actions, rewards, values, policies, game_index, step_indices, priorities = game_sample(
-            np.stack(observations),
-            np.stack(actions),
-            np.stack(values),
-            np.stack(policies),
-            np.stack(priorities),
-            np.stack(rewards),
-            np.stack(game_indices),
-            self.rollout_size,
-            self.n_step,
-            keys
-        )
+        game_sample = jax.vmap(self.sample_from_game, in_axes=(0, 0, None, None))
+        count = 0
+        for index in game_indices:
+            observation, action, reward, value, policy, game_index, step_index = self.sample_from_game(
+                index,
+                choices[index],
+                self.rollout_size,
+                self.n_step,
+                device
+            )
+
+            observations.append(observation)
+            actions.append(action)
+            policies.append(policy)
+            values.append(value)
+            rewards.append(reward)
+            step_indices.append(step_index)
+            count += 1
+            priority_result.append(priorities[game_index][step_index])
+
+
 
         # for random_game in random_games:
         #     subkey, result_dict = self.games[random_game].sample(subkey, 1)
@@ -235,7 +263,7 @@ class MuZeroMemory:
             "policies": policies,
             "step_indices": step_indices,
             "game_indices": np.stack(game_indices),
-            "priority": priorities,
+            "priority": np.stack(priority_result),
         }
 
 
@@ -298,12 +326,13 @@ class GameMemory:
         return array[start:end]
 
     # TODO investigate vmapping
-    def sample(self, key, n):
+    def sample(self, key, n, device):
         available_indices = list(range(0, len(self.observations)))
         starting_index = 32
         available_indices = np.stack(available_indices[starting_index : -(self.rollout_size + self.n_step)])
         priorities = np.stack(self.priorities[starting_index : -(self.rollout_size + self.n_step)])
         priorities = priorities.at[priorities==0].set(1)
+        priorities = jax.device_put(priorities, device)
         sum = np.sum(priorities)
         # TODO check paper to understand why this is happening
         if sum != 0:
