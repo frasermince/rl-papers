@@ -142,7 +142,7 @@ class MuZeroMemory:
 
         # import code; code.interact(local=dict(globals(), **locals()))
         index = random.choice(key, available_indices, p=priorities).squeeze()
-        return index
+        return index, priorities
 
 
     def sample_from_game(self, game_index, step_index, rollout_size, n_step, device):
@@ -203,7 +203,7 @@ class MuZeroMemory:
         # priorities = np.array(priorities)[choices]
         priorities = np.array(priorities)
         priorities = jax.device_put(priorities, device)
-        choices = jax.vmap(self.choice, (0, 0))(priorities, keys)
+        choices, priorities = jax.vmap(self.choice, (0, 0))(priorities, keys)
 
         # for i in random_indices:
         #     observations.append(self.games[i].observations[choices[i]])

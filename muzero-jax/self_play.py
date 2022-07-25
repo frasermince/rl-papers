@@ -230,18 +230,21 @@ monte_carlo_fn = jax.pmap(lambda *x: jax.vmap(lambda *y: monte_carlo_tree_search
 get_actions = jax.vmap(lambda current_games, index, steps: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0, None))
 get_observations = jax.vmap(lambda current_games, index, steps: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0, None))
 def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
-    (key, params, env, current_games, steps) = p
+    (key, params, env, current_games, steps, rewards) = p
     # if self.steps == 1:
     #   self.network.set_device(self.device)
     #   self.target_network.set_device(self.device)
     second_observation, reward, is_done, info = env.recv()
-
+    print(info['env_id'][is_done])
+    print(reward)
+    rewards = rewards.at[info['env_id'][is_done]].set(0)
+    rewards = rewards.at[info['env_id']].set(rewards[info['env_id']] + reward)
     # get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0))
     # get_observations = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0))
     past_actions = jnp.expand_dims(get_actions(current_games, info['env_id'], steps), axis=1)
     past_observations = jnp.expand_dims(get_observations(current_games, info['env_id'], steps), axis=1)
     past_observations = np.reshape(past_observations, (4, int(past_observations.shape[0] / 4), 1, 32, 96, 96, 3))
-    past_actions = np.reshape(past_actions, (4, int(past_actions.shape[0] / 4), 1, 32))
+    past_actions = jnp.reshape(past_actions, (4, int(past_actions.shape[0] / 4), 1, 32))
 
     # TODO use 0 for past_observations upon changing to multigame memory
     # import code; code.interact(local=dict(globals(), **locals()))
@@ -280,27 +283,27 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # current_games, steps, _, _, _, _, _, _ = lax.fori_loop(0, info['env_id'].shape[0], add_item, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
 
     print(i)
+    if i % 50 == 0:
+      print("MAX STEP", jnp.max(steps))
+      print("rewards", jnp.mean(rewards))
     previous_steps = steps
     # for i in range(0, info['env_id'].shape[0]):
     #   current_games, steps, _, _, _, _, _, _ = add_item(i, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
     # import code; code.interact(local=dict(globals(), **locals()))
-    return (key, params, env, current_games, steps)#, game_reward
+    return (key, params, env, current_games, steps, rewards)#, game_reward
 
 # @jax.jit
-def play_game(key, params, self_play_memories, env, steps):
+def play_game(key, params, self_play_memories, env, steps, rewards, halting_steps):
     # TODO set 200 per environment
     # (key, params, new_handle, recv, send, self_play_memories) = lax.fori_loop(0, 200, play_step, (key, params, env_handle, recv, send, self_play_memories))
     # return key, current_game_buffer, env_handle
     # jax.default_device = jax.devices("cpu")[0]
     # jax.default_device = None
-      i = 0
-      halting_steps = 232
       # while(jnp.any(steps < 40)):
-      while((steps >= halting_steps).sum() < 8):
+      for i in range(100):
       #     # TODO backfill from previous memories
-          (key, params, env, self_play_memories, steps) = play_step(i, (key, params, env, self_play_memories, steps))
-          i += 1
+        (key, params, env, self_play_memories, steps, rewards) = play_step(i, (key, params, env, self_play_memories, steps, rewards))
 
-      finished_indices = np.argwhere(steps >= halting_steps).squeeze()
-      return key, self_play_memories, steps, finished_indices
+      finished_indices = jnp.argwhere(steps >= halting_steps).squeeze()
+      return key, self_play_memories, steps, finished_indices, rewards
       # return key, current_game_buffer
