@@ -188,7 +188,7 @@ def perform_simulations(params, hidden_state, policy):
         # self.prediction_network = prediction_network
         # self.dynamics_network = dynamics_network
   # (environment, _) = lax.fori_loop(0, 25, monte_carlo_simulation, (environment, jnp.array(0)))
-  (environment, _) = lax.fori_loop(0, 50, monte_carlo_simulation, (environment, jnp.array(0)))
+  (environment, _) = lax.fori_loop(0, 25, monte_carlo_simulation, (environment, jnp.array(0)))
   # for i in range(25):
   #   (environment, _) = monte_carlo_simulation(i, (environment, jnp.array(0)))
   # TODO confirm that we don't need to divide by the visit count
@@ -235,10 +235,12 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     #   self.network.set_device(self.device)
     #   self.target_network.set_device(self.device)
     second_observation, reward, is_done, info = env.recv()
-    print(info['env_id'][is_done])
-    print(reward)
+    # print(info['env_id'][is_done])
+    # print(rewards[info['env_id']])
+    # print(reward)
+    positive_reward_mask = reward > 0
     rewards = rewards.at[info['env_id'][is_done]].set(0)
-    rewards = rewards.at[info['env_id']].set(rewards[info['env_id']] + reward)
+    rewards = rewards.at[info['env_id']].set(rewards[info['env_id']] + reward * positive_reward_mask)
     # get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0))
     # get_observations = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0))
     past_actions = jnp.expand_dims(get_actions(current_games, info['env_id'], steps), axis=1)
@@ -282,8 +284,7 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
       current_games, steps, _, _, _, _, _, _ = add_item(j, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
     # current_games, steps, _, _, _, _, _, _ = lax.fori_loop(0, info['env_id'].shape[0], add_item, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
 
-    print(i)
-    if i % 50 == 0:
+    if i % 25 == 0:
       print("MAX STEP", jnp.max(steps))
       print("rewards", jnp.mean(rewards))
     previous_steps = steps
@@ -300,10 +301,13 @@ def play_game(key, params, self_play_memories, env, steps, rewards, halting_step
     # jax.default_device = jax.devices("cpu")[0]
     # jax.default_device = None
       # while(jnp.any(steps < 40)):
+      steps_ready = False
       for i in range(100):
       #     # TODO backfill from previous memories
         (key, params, env, self_play_memories, steps, rewards) = play_step(i, (key, params, env, self_play_memories, steps, rewards))
+        if ((steps >= halting_steps).sum() >= 8):
+          steps_ready = True
+          break
 
-      finished_indices = jnp.argwhere(steps >= halting_steps).squeeze()
-      return key, self_play_memories, steps, finished_indices, rewards
+      return key, self_play_memories, steps, rewards, steps_ready
       # return key, current_game_buffer

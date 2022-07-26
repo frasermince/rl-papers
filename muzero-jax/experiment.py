@@ -15,7 +15,7 @@ import functools
 import gym
 import gym.wrappers as wrappers
 from jax import random
-from experience_replay import MuZeroMemory, SelfPlayMemory, GameMemory, Memory
+from experience_replay import MuZeroMemory, SelfPlayMemory, GameMemory, Memory, memory_sample
 from self_play import play_game  
 from chex import assert_axis_dimension, assert_shape
 import envpool
@@ -31,7 +31,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       '_opt_state': 'opt_state',
   }
 
-  def __init__(self, mode, init_rng, config, learning_rate=1e-4, normalize_advantages=False, batch_size=128, rollout_size=5):
+  def __init__(self, mode, init_rng, config, learning_rate=1e-4, normalize_advantages=False, batch_size=256, rollout_size=5):
       super(MuzeroExperiment, self).__init__(mode=mode, init_rng=init_rng)
 
       with jax.default_device(jax.devices()[7]):
@@ -85,6 +85,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
           filehandler = open("./starting_memories.obj", 'rb') 
           self.memory = pickle.load(filehandler)
           self.memory = jax.device_put(self.memory, cpu)
+          self.memory.games = list(self.memory.games)
           filehandler.close()
           filehandler = None
 
@@ -152,9 +153,10 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       while(True):
         (a, b, c) = self._target_params
         params = (a.copy({}), b.copy({}), c.copy({}))
-        key, game_buffer, steps, finished_indices, rewards = play_game(key, params, game_buffer, self.env, steps, rewards, self.halting_steps)
+        key, game_buffer, steps, rewards, steps_ready = play_game(key, params, game_buffer, self.env, steps, rewards, self.halting_steps)
         # key, game_buffer, self.env_handle = play_game(key, params, starting_memory, handle, recv, send)
-        if((steps >= self.halting_steps).sum() >= 8):
+        if steps_ready:
+          finished_indices = jnp.argwhere(steps >= self.halting_steps).squeeze()
           finished_game_buffer, steps = game_buffer.output_game_buffer(finished_indices, steps, self.initial_observation)
           with jax.default_device(cpu):
             finished_game_buffer = jax.device_put(finished_game_buffer, cpu)
@@ -247,7 +249,6 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     if self._train_input is None:
       self._initialize_train()
 
-    print("GAMES", self.memory.item_count())
     while self.memory.item_count() < self.batch_size:
       if self.memory.item_count() != self.game_count:
         print("GAMES", self.memory.item_count())
@@ -330,7 +331,11 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     device = jax.devices()[7]
     while True:
       with jax.default_device(device):
-        key, memories = self.memory.sample(key, self.batch_size, device)
+
+        with jax.default_device(cpu):
+          # import code; code.interact(local=dict(globals(), **locals()))
+          key, data = self.memory.fetch_games(jax.device_put(key, cpu), self.batch_size)
+        memories = memory_sample(jax.device_put(data, device), self.memory.rollout_size, self.memory.n_step, self.memory.discount_rate)
         observations = np.reshape(memories["observations"], (self.training_device_count, int(self.batch_size / self.training_device_count), 32, 96, 96, 3))
         actions = np.reshape(memories["actions"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6, 32))
         policies = np.reshape(memories["policies"], (self.training_device_count, int(self.batch_size / self.training_device_count), 6, 18))

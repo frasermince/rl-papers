@@ -106,6 +106,7 @@ class MuZeroMemory:
 
 
     def append(self, self_play_memory):
+        print("BEFORE APPEND", len(self.games))
         for i in range(len(self_play_memory)):
             game_memory = GameMemory(rollout_size=self.rollout_size, n_step=self.n_step, discount_rate=self.discount_rate)
             game_memory.add_from_self_play(self_play_memory[i])
@@ -113,6 +114,7 @@ class MuZeroMemory:
             if len(self.games) > self.length:
                 self.games.pop(0)
 
+        print("AFTER APPEND", len(self.games))
     def item_count(self):
         return len(self.games)
 
@@ -144,44 +146,9 @@ class MuZeroMemory:
         index = random.choice(key, available_indices, p=priorities).squeeze()
         return index, priorities
 
-
-    def sample_from_game(self, game_index, step_index, rollout_size, n_step, device):
-        # result["observations"].append observation_result.append(result_dict["observations"])
-        # action_result.append(result_dict["actions"])
-        # reward_result.append(result_dict["rewards"])
-        # value_result.append(result_dict["values"])
-        # policy_result.append(result_dict["policies"])
-        # step_index_result.append(result_dict["index"])
-        # game_index_result.append(random_game)
-        # priority_result.append(result_dict["priority"])
-        game = jax.device_put(self.games[game_index], device)
-        k_step_actions = []
-        k_step_rewards = []
-        k_step_values = []
-        k_step_policies = []
-        for k_step in range(rollout_size + 1):
-            k_step_actions.append(lax.dynamic_slice_in_dim(game.actions, step_index - 32 + k_step, 32))
-            k_step_rewards.append(game.rewards[step_index + k_step])
-            _, k_step_value, _, _= lax.fori_loop(0, n_step - 1, self.compute_nstep_value, (step_index + k_step, game.rewards[step_index + k_step] - game.values[step_index + k_step], game.rewards, n_step))
-            k_step_values.append(k_step_value)
-            # k_step_values.append(compute_nstep_value((index + k_step, rewards[index + k_step]) - values[index + k_step], rewards, n_step))
-            k_step_policies.append(game.policies[step_index + k_step])
-
-        
-        observations = lax.dynamic_slice_in_dim(game.observations, step_index - 32, 32)
-        return (np.array(observations), np.stack(k_step_actions), np.array(k_step_rewards), np.array(k_step_values), np.array(k_step_policies), game_index, step_index)
-        # return key, {
-        #     "observations": np.array(self.observations[index - 32 : index]),
-        #     "actions": np.stack(k_step_actions),
-        #     "rewards": np.array(k_step_rewards),
-        #     "values": np.array(k_step_values),
-        #     "policies": np.array(k_step_policies),
-        #     "index": index,
-        #     "priority": priorities[index],
-        # }
-
-    # @jax.jit
-    def sample(self, key, n, device):
+    
+    # @partial(jax.jit, static_argnums=(2))
+    def fetch_games(self, key, n):
                 
         key, subkey = random.split(key)
         game_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n)).squeeze()
@@ -200,9 +167,14 @@ class MuZeroMemory:
         priority_result = []
         for i in game_indices:
             priorities.append(self.games[i].priorities)
+            observations.append(self.games[i].observations)
+            actions.append(self.games[i].actions)
+            values.append(self.games[i].values)
+            policies.append(self.games[i].policies)
+            rewards.append(self.games[i].rewards)
+
         # priorities = np.array(priorities)[choices]
         priorities = np.array(priorities)
-        priorities = jax.device_put(priorities, device)
         choices, priorities = jax.vmap(self.choice, (0, 0))(priorities, keys)
 
         # for i in random_indices:
@@ -220,51 +192,112 @@ class MuZeroMemory:
         # policy_result = []
         # step_index_result = []
         # game_index_result = []
+        return key, (np.stack(observations), np.stack(actions), np.stack(values), np.stack(policies), np.stack(rewards), priorities, game_indices, choices)
 
-        game_sample = jax.vmap(self.sample_from_game, in_axes=(0, 0, None, None))
-        count = 0
-        for index in game_indices:
-            observation, action, reward, value, policy, game_index, step_index = self.sample_from_game(
-                index,
-                choices[index],
-                self.rollout_size,
-                self.n_step,
-                device
-            )
-
-            observations.append(observation)
-            actions.append(action)
-            policies.append(policy)
-            values.append(value)
-            rewards.append(reward)
-            step_indices.append(step_index)
-            count += 1
-            priority_result.append(priorities[game_index][step_index])
+def compute_nstep_value(i, data):
+  (starting_index, value, rewards, n_step, discount_rate) = data
+  update_value = lambda: value + rewards[starting_index + n_step + 1] * discount_rate ** n_step
+  value = lax.cond( starting_index + n_step + 1 < rewards.shape[0], update_value, lambda: value)
+  return (starting_index, value, rewards, n_step, discount_rate)
 
 
+@partial(jax.jit, static_argnums=(7, 8, 9))
+def sample_from_game(observations, actions, values, policies, rewards, game_index, step_index, rollout_size, n_step, discount_rate):
+  # result["observations"].append observation_result.append(result_dict["observations"])
+  # action_result.append(result_dict["actions"])
+  # reward_result.append(result_dict["rewards"])
+  # value_result.append(result_dict["values"])
+  # policy_result.append(result_dict["policies"])
+  # step_index_result.append(result_dict["index"])
+  # game_index_result.append(random_game)
+  # priority_result.append(result_dict["priority"])
+  k_step_actions = []
+  k_step_rewards = []
+  k_step_values = []
+  k_step_policies = []
+  for k_step in range(rollout_size + 1):
+      k_step_actions.append(lax.dynamic_slice_in_dim(actions, step_index - 32 + k_step, 32))
+      k_step_rewards.append(rewards[step_index + k_step])
+      _, k_step_value, _, _, _ = lax.fori_loop(0, n_step - 1, compute_nstep_value, (step_index + k_step, rewards[step_index + k_step] - values[step_index + k_step], rewards, n_step, discount_rate))
+      k_step_values.append(k_step_value)
+      # k_step_values.append(compute_nstep_value((index + k_step, rewards[index + k_step]) - values[index + k_step], rewards, n_step))
+      k_step_policies.append(policies[step_index + k_step])
 
-        # for random_game in random_games:
-        #     subkey, result_dict = self.games[random_game].sample(subkey, 1)
+  
+  observations = lax.dynamic_slice_in_dim(observations, step_index - 32, 32)
+  return (np.array(observations), np.stack(k_step_actions), np.array(k_step_rewards), np.array(k_step_values), np.array(k_step_policies), game_index, step_index)
+  # return key, {
+  #     "observations": np.array(self.observations[index - 32 : index]),
+  #     "actions": np.stack(k_step_actions),
+  #     "rewards": np.array(k_step_rewards),
+  #     "values": np.array(k_step_values),
+  #     "policies": np.array(k_step_policies),
+  #     "index": index,
+  #     "priority": priorities[index],
+  # }
 
-        #     observation_result.append(result_dict["observations"])
-        #     action_result.append(result_dict["actions"])
-        #     reward_result.append(result_dict["rewards"])
-        #     value_result.append(result_dict["values"])
-        #     policy_result.append(result_dict["policies"])
-        #     step_index_result.append(result_dict["index"])
-        #     game_index_result.append(random_game)
-        #     priority_result.append(result_dict["priority"])
 
-        return key, {
-            "observations": observations,
-            "actions": actions,
-            "rewards": rewards,
-            "values": values,
-            "policies": policies,
-            "step_indices": step_indices,
-            "game_indices": np.stack(game_indices),
-            "priority": np.stack(priority_result),
-        }
+@partial(jax.jit, static_argnums=(1,2,3,))
+def memory_sample(data, rollout_size, n_step, discount_rate):
+    (observations, actions, values, policies, rewards, priorities, game_indices, choices) = data
+    game_sample = jax.vmap(sample_from_game, (0, 0, 0, 0, 0, 0, 0, None, None, None))
+    observations, actions, rewards, values, policies, _, step_indices = game_sample(
+      observations,
+      actions,
+      values,
+      policies,
+      rewards,
+      game_indices,
+      choices,
+      rollout_size,
+      n_step,
+      discount_rate
+    )
+
+    priority_result = jax.vmap((lambda i, j: priorities[i][j]), (0, 0))(game_indices, step_indices)
+    # count = 0
+    # for index in game_indices:
+    #     observation, action, reward, value, policy, game_index, step_index = self.sample_from_game(
+    #         index,
+    #         choices[index],
+    #         self.rollout_size,
+    #         self.n_step,
+    #         device
+    #     )
+
+    #     observations.append(observation)
+    #     actions.append(action)
+    #     policies.append(policy)
+    #     values.append(value)
+    #     rewards.append(reward)
+    #     step_indices.append(step_index)
+    #     count += 1
+    #     priority_result.append(priorities[game_index][step_index])
+
+
+
+    # for random_game in random_games:
+    #     subkey, result_dict = self.games[random_game].sample(subkey, 1)
+
+    #     observation_result.append(result_dict["observations"])
+    #     action_result.append(result_dict["actions"])
+    #     reward_result.append(result_dict["rewards"])
+    #     value_result.append(result_dict["values"])
+    #     policy_result.append(result_dict["policies"])
+    #     step_index_result.append(result_dict["index"])
+    #     game_index_result.append(random_game)
+    #     priority_result.append(result_dict["priority"])
+
+    return {
+        "observations": observations,
+        "actions": actions,
+        "rewards": rewards,
+        "values": values,
+        "policies": policies,
+        "step_indices": step_indices,
+        "game_indices": np.stack(game_indices),
+        "priority": np.stack(priority_result),
+    }
 
 
 
