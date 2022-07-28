@@ -24,6 +24,8 @@ from threading import Thread
 import pickle
 
 
+# TODO move to https://github.com/ray-project/ray/blob/master/python/ray/autoscaler/gcp/tpu.yaml
+# TODO investigate where to add Dirichlet noise
 class MuzeroExperiment(experiment.AbstractExperiment):
   CHECKPOINT_ATTRS = {
       '_params': 'params',
@@ -31,7 +33,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       '_opt_state': 'opt_state',
   }
 
-  def __init__(self, mode, init_rng, config, learning_rate=1e-4, normalize_advantages=False, batch_size=256, rollout_size=5):
+  def __init__(self, mode, init_rng, config, learning_rate=1e-4, normalize_advantages=False, batch_size=128, rollout_size=5):
       super(MuzeroExperiment, self).__init__(mode=mode, init_rng=init_rng)
 
       with jax.default_device(jax.devices()[7]):

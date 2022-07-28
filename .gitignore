@@ -1,3 +1,4 @@
 /data
 lightning_logs/
 video
+muzero-jax/__pycache__/

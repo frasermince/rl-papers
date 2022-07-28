@@ -352,9 +352,6 @@ class GameMemory:
           value += self.rewards[starting_index + n_step + 1] * self.discount_rate ** n_step
       return value
 
-
-    # TODO Sample on a game basis (for atari "games" of 200 steps)
-
     def access_slice(self, array, start, end):
         return array[start:end]
 
