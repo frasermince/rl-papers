@@ -37,6 +37,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       super(MuzeroExperiment, self).__init__(mode=mode, init_rng=init_rng)
 
       with jax.default_device(jax.devices()[7]):
+        self.global_step = 0
         self.mode = mode
         self.init_rng = init_rng
         self.config = config
@@ -65,6 +66,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self.key = random.PRNGKey(0)
         self.network = MuZeroNet()
         self.halting_steps = 232
+        # self.halting_steps = 40
       
         # self.memory = MuZeroMemory(125000, rollout_size=rollout_size)
         register_pytree_node(
@@ -87,6 +89,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
           filehandler = open("./starting_memories.obj", 'rb') 
           self.memory = pickle.load(filehandler)
           self.memory = jax.device_put(self.memory, cpu)
+          self.memory.length = 5000
           self.memory.games = list(self.memory.games)
           filehandler.close()
           filehandler = None
@@ -96,7 +99,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self.env_batch_size = int(self.num_envs / 4)
 
         with jax.default_device(jax.devices()[0]):
-          self.starting_memories = SelfPlayMemory(self.num_envs)
+          self.starting_memories = SelfPlayMemory(self.num_envs, self.halting_steps)
           self.starting_memories.populate()
        
         # register_pytree_node(
@@ -108,7 +111,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self.game_count = 0
         
         self.env = envpool.make("Pong-v5", env_type="gym", num_envs=self.num_envs, batch_size=self.env_batch_size, img_height=96, img_width=96, gray_scale=False, stack_num=1)
-        self.env.async_reset()
+        # self.env.async_reset()
         self.env_handle, self.recv, self.send, _ = self.env.xla()
 
         with jax.default_device(jax.devices()[0]):
@@ -127,7 +130,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         
         self.entropy_scaling = 0.01
         self.automatic_optimization = False
-        self.target_update_rate = 1000
+        self.target_update_rate = 100
         self._params = None
         self._target_params = None
         self.training_device_count = int(jax.device_count() / 2)
@@ -153,9 +156,15 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       # with jax.default_device(cpu):
       #   self.memory.append(finished_game_buffer)
       while(True):
+        if self.global_step < 500000:
+          temperature = 1
+        elif  self.global_step < 750000:
+          temperature = 0.5
+        else:
+          temperature = 0.25
         (a, b, c) = self._target_params
         params = (a.copy({}), b.copy({}), c.copy({}))
-        key, game_buffer, steps, rewards, steps_ready = play_game(key, params, game_buffer, self.env, steps, rewards, self.halting_steps)
+        key, game_buffer, steps, rewards, steps_ready = play_game(key, params, game_buffer, self.env, steps, rewards, self.halting_steps, temperature)
         # key, game_buffer, self.env_handle = play_game(key, params, starting_memory, handle, recv, send)
         if steps_ready:
           finished_indices = jnp.argwhere(steps >= self.halting_steps).squeeze()

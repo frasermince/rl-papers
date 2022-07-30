@@ -19,7 +19,7 @@ def game_memory_unflatten(aux, children):
 
 def self_play_flatten(memory):
     return ((memory.observations, memory.actions, memory.rewards, memory.values, memory.policies),
-        (memory.games))
+        (memory.games, memory.halting_steps))
 
 def muzero_flatten(memory):
     return ((memory.games), (memory.length, memory.rollout_size, memory.n_step, memory.discount_rate))
@@ -32,8 +32,8 @@ def muzero_unflatten(aux, children):
 
 
 def self_play_unflatten(aux, children):
-    (games) = aux
-    memory = SelfPlayMemory(games)
+    (games, halting_steps) = aux
+    memory = SelfPlayMemory(games, halting_steps)
     (observations, actions, rewards, values, policies) = children
     memory.observations = observations
     memory.actions = actions
@@ -43,26 +43,34 @@ def self_play_unflatten(aux, children):
     return memory
 
 
-class SelfPlayMemory(Sequence):
-    def __init__(self, games):
+class SelfPlayMemory:
+    def __init__(self, games, halting_steps=232):
         self.games = games
+        self.halting_steps = halting_steps
 
     def populate(self):
-        self.observations = np.zeros((self.games, 232, 96, 96, 3))
-        self.actions = np.zeros((self.games, 232, 1))
-        self.rewards = np.zeros((self.games, 232, 1))
-        self.values = np.zeros((self.games, 232, 1))
-        self.policies = np.zeros((self.games, 232, 18))
+        self.observations = np.zeros((self.games, self.halting_steps, 96, 96, 3))
+        self.actions = np.zeros((self.games, self.halting_steps, 1))
+        self.rewards = np.zeros((self.games, self.halting_steps, 1))
+        self.values = np.zeros((self.games, self.halting_steps, 1))
+        self.policies = np.zeros((self.games, self.halting_steps, 18))
 
     def set_steps(self, i, data):
         all_steps, finished_steps = data
         return all_steps.at[finished_steps[i]].set(32)
 
+    def update_memory(self, observations, actions, rewards, values, policies):
+        self.observations = observations
+        self.actions = actions
+        self.rewards = rewards
+        self.values = values
+        self.policies = policies
+
     @jax.jit
     def output_game_buffer(self, finished_steps, all_steps, starting_observations, amount_to_add = 8):
         if amount_to_add:
             finished_steps = finished_steps[0 : amount_to_add]
-        finished_buffer = SelfPlayMemory(self.games)
+        finished_buffer = SelfPlayMemory(self.games, self.halting_steps)
         finished_buffer.observations = jax.vmap(lambda index: self.observations[index])(finished_steps)
         finished_buffer.actions = jax.vmap(lambda index: self.actions[index])(finished_steps)
         finished_buffer.rewards = jax.vmap(lambda index: self.rewards[index])(finished_steps)

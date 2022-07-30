@@ -8,6 +8,11 @@ import flax
 import flax.linen as nn
 import envpool
 from operator import itemgetter
+from jax.config import config
+import sys
+
+# config.update('jax_disable_jit', True)
+jnp.set_printoptions(threshold=sys.maxsize)
 # from jax.config import config
 
 # config.update('jax_disable_jit', True)
@@ -28,12 +33,10 @@ def normalize(value, min_max):
   minimum, maximum = min_max
   return jnp.where(maximum > minimum, (value - minimum) / (maximum - minimum), value)
 
-def visit_policy(environment):
-  result = jnp.zeros(18)
-  result = environment["policy"][1:19] / environment["visit_count"][1:19]
-  # for i in range(18):
-  #   result[i] = environment["policy"][0][i] / environment["visit_count"][i]
-  return nn.softmax(result, axis=0)
+def visit_policy(environment, temperature):
+  visit_count = environment["visit_count"][1:19]
+  distribution = visit_count ** (1 / temperature)
+  return distribution / jnp.sum(distribution)
 
 
 def initial_expand(environment, state, policy):
@@ -92,12 +95,13 @@ def expand(environment, action, state, index):
   return environment, value
 
 def branch(params):
-  environment, index = params
+  environment, index, _ = params
   child_index, action = choose_child(environment, index)
-  environment["history"] = environment["history"].at[environment["history_length"]].set(action)
-  environment["search_path"] = environment["search_path"].at[environment["history_length"]].set(index)
-  environment["history_length"] += 1
-  return environment, child_index
+  # environment["history"] = environment["history"].at[environment["search_path_length"]].set(action)
+  environment["search_path_length"] += 1
+  environment["search_path"] = environment["search_path"].at[environment["search_path_length"]].set(child_index)
+  # import code; code.interact(local=dict(globals(), **locals()))
+  return environment, child_index, action
   # previous_qval, environment = monte_carlo_simulation(environment, parent_index=index, index=child_index, parent_action=action)
   # cumulative_discounted_reward = environment["reward"][index] + discount_factor * previous_qval
   # environment["min_max"] = min_max_update(cumulative_discounted_reward, environment["min_max"])
@@ -110,7 +114,7 @@ def branch(params):
 def scan_fn(accum):
   environment, value, i = accum
   index = environment["search_path"][i]
-  environment["visit_count"].at[index].set(environment["visit_count"][index] + 1)
+  environment["visit_count"] = environment["visit_count"].at[index].set(environment["visit_count"][index] + 1)
   environment["q_val"] = environment["q_val"].at[index].set(value)
   value = environment["reward"][index] + discount_factor * value
   return environment, value, i - 1
@@ -121,25 +125,28 @@ def condition_fn(accum):
 
 
 def backpropagate(environment, value):
-  environment, value, _ = lax.while_loop(condition_fn, scan_fn, (environment, support_to_scalar(value).squeeze().squeeze(), environment["history_length"]))
+  environment, value, _ = lax.while_loop(condition_fn, scan_fn, (environment, support_to_scalar(value).squeeze().squeeze(), environment["search_path_length"]))
   return environment
 
 def not_all_zeros(params):
-  environment, index = params
+  environment, index, _ = params
   children = environment["children"][index]
   return jnp.all(children != zeros)
 
 def monte_carlo_simulation(i, data):
-  environment, index = data
+  environment, _ = data
+  index = 0
   # TODO: the following:
   # 1. Add temperature formula see Appendix D of paper
   # 2. Confirm that value formulas match paper
-  environment, index = lax.while_loop(not_all_zeros, branch, (environment, index))
+  environment["search_path_length"] = 0
+  environment["search_path"] = jnp.zeros(60, dtype=jnp.int32)
+  environment, index, action = lax.while_loop(not_all_zeros, branch, (environment, index, 0))
   # while not_all_zeros((environment, index)):
   #   environment, index = branch((environment, index))
-  parent_index = environment["search_path"][environment["history_length"] - 1]
-  index = environment["search_path"][environment["history_length"]]
-  environment, value = expand(environment, environment["history"][index], environment["state"][parent_index], index)
+  parent_index = environment["search_path"][environment["search_path_length"] - 1]
+  index = environment["search_path"][environment["search_path_length"]]
+  environment, value = expand(environment, action, environment["state"][parent_index], index)
   return backpropagate(environment, value), index
 
   #print("INDEX", index)
@@ -162,7 +169,7 @@ def monte_carlo_simulation(i, data):
   #     self.visit_count[index] += 1
   #     return self.q_val[index]#, action
             
-def perform_simulations(params, hidden_state, policy):
+def perform_simulations(params, hidden_state, policy, temperature):
   environment = {
     "policy": jnp.zeros([2000]),
     "visit_count": jnp.ones([2000]),
@@ -172,10 +179,10 @@ def perform_simulations(params, hidden_state, policy):
     "state": jnp.zeros([2000, 6, 6, 256]),
     "min_max": (jnp.array(float("infinity")), jnp.array(float("-infinity"))),
     "params": params,
-    "history": jnp.array(range(2000)),
-    "search_path": jnp.array(range(2000)),
+    # "history": jnp.zeros(2000, dtype=jnp.int32),
+    "search_path": jnp.zeros(60, dtype=jnp.int32),
     "current_index": jnp.array(0),
-    "history_length": 0
+    "search_path_length": 0
   }
   environment = initial_expand(environment, hidden_state, policy)
         # self.discount_factor = jnp.array(0.99)
@@ -188,14 +195,14 @@ def perform_simulations(params, hidden_state, policy):
         # self.prediction_network = prediction_network
         # self.dynamics_network = dynamics_network
   # (environment, _) = lax.fori_loop(0, 25, monte_carlo_simulation, (environment, jnp.array(0)))
-  (environment, _) = lax.fori_loop(0, 25, monte_carlo_simulation, (environment, jnp.array(0)))
+  (environment, _) = lax.fori_loop(0, 50, monte_carlo_simulation, (environment, jnp.array(0)))
   # for i in range(25):
   #   (environment, _) = monte_carlo_simulation(i, (environment, jnp.array(0)))
   # TODO confirm that we don't need to divide by the visit count
-  return visit_policy(environment), environment["q_val"][0], environment
+  return visit_policy(environment, temperature), environment["q_val"][0], environment
 
-@jax.jit
-def monte_carlo_tree_search(params, observation, action):
+# @jax.jit
+def monte_carlo_tree_search(params, observation, action, temperature):
     network = MuZeroNet()
     (representation_params, _, prediction_params) = params
     # print("REP SHAPE", representation_params)
@@ -206,7 +213,7 @@ def monte_carlo_tree_search(params, observation, action):
     hidden_state, _ = network.representation_net(representation_params, observation, action)
     (value, policy), _ = network.prediction_net(prediction_params, hidden_state)
     #node = Node(policy, network.prediction_net, network.dynamics_net, self.device, normalizer)
-    policy, value, environment = perform_simulations(params, hidden_state, policy.squeeze())
+    policy, value, environment = perform_simulations(params, hidden_state, policy.squeeze(), temperature)
 
     return policy, value, environment
 
@@ -226,11 +233,11 @@ def add_item(i, data):
 
 
 # TODO explore if steps are recorded correctly due to async gym
-monte_carlo_fn = jax.pmap(lambda *x: jax.vmap(lambda *y: monte_carlo_tree_search(*y), (None, 0, 0))(*x), in_axes=((None, 0, 0)), devices=jax.devices()[0: 4])
+monte_carlo_fn = jax.pmap(lambda *x: jax.vmap(lambda *y: monte_carlo_tree_search(*y), (None, 0, 0, None))(*x), in_axes=((None, 0, 0, None)), devices=jax.devices()[0: 4])
 get_actions = jax.vmap(lambda current_games, index, steps: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0, None))
 get_observations = jax.vmap(lambda current_games, index, steps: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0, None))
 def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
-    (key, params, env, current_games, steps, rewards) = p
+    (key, params, env, current_games, steps, rewards, temperature) = p
     # if self.steps == 1:
     #   self.network.set_device(self.device)
     #   self.target_network.set_device(self.device)
@@ -251,13 +258,15 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # TODO use 0 for past_observations upon changing to multigame memory
     # import code; code.interact(local=dict(globals(), **locals()))
     # print("BEFORE SEARCH")
-    policy, value, _ = monte_carlo_fn(params, past_observations, past_actions)
+    policy, value, search_env = monte_carlo_fn(params, past_observations, past_actions, temperature)
+    # policy, value, search_env = monte_carlo_tree_search(params, past_observations[0, 0], past_actions[0, 0], temperature)
     # import code; code.interact(local=dict(globals(), **locals()))
     # policy, value, environment = monte_carlo_tree_search(params, past_observations[0, 0], past_actions[0, 0])
     # print("ENVIRONMENT", environment["history_length"], environment["history"], environment["search_path"])
     # print("AFTER SEARCH")
     key, subkey = jax.random.split(key)
     policy = policy.reshape(policy.shape[0] * policy.shape[1], policy.shape[2])
+
     value = value.reshape(value.shape[0] * value.shape[1])
     action = jax.random.categorical(subkey, policy, axis=1)
 
@@ -282,29 +291,36 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # current_game_buffer.append((jnp.array(second_observation) / 255, action, policy, value, reward))
     for j in range(info['env_id'].shape[0]):
       current_games, steps, _, _, _, _, _, _ = add_item(j, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
+
+    # print(current_games.observations[0, 32:])
     # current_games, steps, _, _, _, _, _, _ = lax.fori_loop(0, info['env_id'].shape[0], add_item, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
 
     if i % 25 == 0:
+      # print("Q VALS", search_env['q_val'][0, 0, :])
+      print("VISIT COUNT", search_env['visit_count'][0, 0, 1:19])
+      print("POLICY", policy[0])
+      print("SEARCH PATH", search_env['search_path'][0,0, :])
       print("MAX STEP", jnp.max(steps))
       print("rewards", jnp.mean(rewards))
     previous_steps = steps
     # for i in range(0, info['env_id'].shape[0]):
     #   current_games, steps, _, _, _, _, _, _ = add_item(i, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
     # import code; code.interact(local=dict(globals(), **locals()))
-    return (key, params, env, current_games, steps, rewards)#, game_reward
+    return (key, params, env, current_games, steps, rewards, temperature)#, game_reward
 
 # @jax.jit
-def play_game(key, params, self_play_memories, env, steps, rewards, halting_steps):
+def play_game(key, params, self_play_memories, env, steps, rewards, halting_steps, temperature):
     # TODO set 200 per environment
     # (key, params, new_handle, recv, send, self_play_memories) = lax.fori_loop(0, 200, play_step, (key, params, env_handle, recv, send, self_play_memories))
     # return key, current_game_buffer, env_handle
     # jax.default_device = jax.devices("cpu")[0]
     # jax.default_device = None
       # while(jnp.any(steps < 40)):
+      params = jax.device_put(params, jax.devices()[0])
       steps_ready = False
       for i in range(100):
       #     # TODO backfill from previous memories
-        (key, params, env, self_play_memories, steps, rewards) = play_step(i, (key, params, env, self_play_memories, steps, rewards))
+        (key, params, env, self_play_memories, steps, rewards, _) = play_step(i, (key, params, env, self_play_memories, steps, rewards, temperature))
         if ((steps >= halting_steps).sum() >= 8):
           steps_ready = True
           break
