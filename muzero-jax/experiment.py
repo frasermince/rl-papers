@@ -65,10 +65,10 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self.rollout_size = 5
         self.key = random.PRNGKey(0)
         self.network = MuZeroNet()
-        self.halting_steps = 232
-        # self.halting_steps = 40
+        # self.halting_steps = 232
+        self.halting_steps = 70
       
-        # self.memory = MuZeroMemory(125000, rollout_size=rollout_size)
+        self.memory = MuZeroMemory(5000, rollout_size=rollout_size)
         register_pytree_node(
             GameMemory,
             experience_replay.game_memory_flatten,
@@ -87,8 +87,8 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         cpu = jax.devices("cpu")[0]
         with jax.default_device(cpu):
           filehandler = open("./starting_memories.obj", 'rb') 
-          self.memory = pickle.load(filehandler)
-          self.memory = jax.device_put(self.memory, cpu)
+          # self.memory = pickle.load(filehandler)
+          # self.memory = jax.device_put(self.memory, cpu)
           self.memory.length = 5000
           self.memory.games = list(self.memory.games)
           filehandler.close()
@@ -267,8 +267,6 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       time.sleep(1)
     # file = open('starting_memories.obj', 'wb') 
     # pickle.dump(self.memory, file)
-    # return
-
 
 
     inputs = next(self._train_input)
@@ -356,6 +354,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         step_indices = np.array(memories["step_indices"])
         priorities = np.reshape(memories["priority"], (self.training_device_count, int(self.batch_size / self.training_device_count)))
       # result = jax.device_put((observations, actions, policies, values, rewards, game_indices, step_indices, priorities), jax.devices()[7])
+      # print("STEP", game_indices, step_indices)
       yield (observations, actions, policies, values, rewards, game_indices, step_indices, priorities)
 
     # per_device_batch_size, ragged = divmod(global_batch_size, num_devices)

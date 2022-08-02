@@ -22,11 +22,11 @@ def self_play_flatten(memory):
         (memory.games, memory.halting_steps))
 
 def muzero_flatten(memory):
-    return ((memory.games), (memory.length, memory.rollout_size, memory.n_step, memory.discount_rate))
+    return ((memory.games, memory.priorities), (memory.length, memory.rollout_size, memory.n_step, memory.discount_rate))
 
 def muzero_unflatten(aux, children):
     memory = MuZeroMemory(1)
-    memory.games = children
+    memory.games, memory.priorities = children
     memory.length, memory.rollout_size, memory.n_step, memory.discount_rate = aux
     return memory
 
@@ -105,9 +105,10 @@ class SelfPlayMemory:
 
 
 class MuZeroMemory:
-    def __init__(self, length, games=[], rollout_size=5, n_step=10, discount_rate=0.995):
+    def __init__(self, length, games=[], priorities=[], rollout_size=5, n_step=10, discount_rate=0.995):
         self.length = length
         self.games = games
+        self.priorities = priorities
         self.rollout_size = rollout_size
         self.n_step = n_step
         self.discount_rate = discount_rate
@@ -119,6 +120,7 @@ class MuZeroMemory:
             game_memory = GameMemory(rollout_size=self.rollout_size, n_step=self.n_step, discount_rate=self.discount_rate)
             game_memory.add_from_self_play(self_play_memory[i])
             self.games.append(game_memory)
+            self.priorities.append(np.max(self.games[i].priorities))
             if len(self.games) > self.length:
                 self.games.pop(0)
 
@@ -127,7 +129,10 @@ class MuZeroMemory:
         return len(self.games)
 
     def update_priorities(self, priorities, game_indices, step_indices):
-        return self.games[game_indices].update_priorities(priorities, step_indices)
+        self.games[game_indices].update_priorities(priorities, step_indices)
+        for i in game_indices:
+            self.priorities[i] = np.max(self.games[i].priorities)
+        print("GAME PRIORITIES", self.priorities)
 
     def compute_nstep_value(self, i, data):
         (starting_index, value, rewards, n_step) = data
@@ -159,7 +164,7 @@ class MuZeroMemory:
     def fetch_games(self, key, n):
                 
         key, subkey = random.split(key)
-        game_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n)).squeeze()
+        game_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n), p=self.priorities).squeeze()
 
         keys = random.split(key, num=n + 1)
         key = keys[0]
@@ -333,6 +338,8 @@ class GameMemory:
         self.values = values.squeeze()
         self.policies = policies.squeeze()
         # self.priorities.append(abs(values[i] - self.compute_nstep_value(length, values[i])))
+        # print(values, self.compute_nstep_value(length, values))
+        # print("PRIORITIES", abs(values - self.compute_nstep_value(length, values)))
         self.priorities = (abs(values - self.compute_nstep_value(length, values))).squeeze()
 
     def append(self, item):

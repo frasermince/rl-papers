@@ -32,17 +32,21 @@ def scatter(input, dim, index, src, reduce=None, should_print=False):
   return getattr(input.at[tuple(idx)], reduce or "set")(src)
 
 def support_to_scalar(supports):
-  indices = jnp.expand_dims(jnp.array(range(-300, 301)), axis=0)
+  indices = jnp.expand_dims(jnp.array(range(-300, 301), dtype=jnp.float32), axis=0)
   indices = jnp.expand_dims(indices, axis=0)
   probabilities = nn.softmax(supports, axis=-1)
   scalar = (probabilities * indices).sum(axis=-1)
   sign = jnp.sign(scalar)
-  scalar = jnp.sqrt(1 + 4 * epsilon * (jnp.abs(scalar) + 1 + epsilon)) - 1
-  scalar /= 2 * epsilon
-  scalar = (scalar ** 2) - 1
+  scalar = ((jnp.sqrt(1 + 4 * epsilon * (jnp.abs(scalar) + 1 + epsilon)) - 1) / (2 * epsilon)) ** 2 - 1
   scalar *= sign
+
   return scalar
   
+  # x = torch.sign(x) * (
+  #       ((torch.sqrt(1 + 4 * 0.001 * (torch.abs(x) + 1 + 0.001)) - 1) / (2 * 0.001))
+  #       ** 2
+  #       - 1
+    # )
 def scalar_to_support(scalar):
   scalar = jnp.sign(scalar) * ((jnp.sqrt(jnp.abs(scalar) + 1)) - 1 + epsilon * scalar)
   supports = jnp.expand_dims(jnp.zeros(scalar.shape), axis=-1)
@@ -85,7 +89,6 @@ class ResBlock(nn.Module):
             # residual = self.norm(name='norm_proj')(residual)
         return nn.relu(x + residual)
     
-# still need to folow the recomendations found on page 14 of the paper under the "Network Architecture" section under reference number 30
 class PredictionNet(nn.Module):
     @nn.compact
     def __call__(self, x):
@@ -93,8 +96,10 @@ class PredictionNet(nn.Module):
         assert_shape(x, (None, 6, 6, 256))
         x = nn.relu(nn.Conv(128, kernel_size=(3, 3))(x))
         x = nn.relu(nn.Conv(64, kernel_size=(3, 3))(x))
+        # print("X SHAPE BEFORE", x.shape)
         x = jnp.transpose(x, (0, 3, 1, 2))
         x = jnp.reshape(x, (x.shape[0], -1))
+        # print("X SHAPE AFTER", x.shape)
         policy = nn.relu(nn.Dense(18)(x))
         value = nn.relu(nn.Dense(512)(x))
         value = nn.Dense(601)(x)
