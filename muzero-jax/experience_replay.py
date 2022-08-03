@@ -129,10 +129,9 @@ class MuZeroMemory:
         return len(self.games)
 
     def update_priorities(self, priorities, game_indices, step_indices):
+        # print("PRIORITIES", priorities)
         self.games[game_indices].update_priorities(priorities, step_indices)
-        for i in game_indices:
-            self.priorities[i] = np.max(self.games[i].priorities)
-        print("GAME PRIORITIES", self.priorities)
+        self.priorities[game_indices] = np.max(self.games[game_indices].priorities)
 
     def compute_nstep_value(self, i, data):
         (starting_index, value, rewards, n_step) = data
@@ -164,7 +163,7 @@ class MuZeroMemory:
     def fetch_games(self, key, n):
                 
         key, subkey = random.split(key)
-        game_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n), p=self.priorities).squeeze()
+        game_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n), p=np.array(self.priorities)).squeeze()
 
         keys = random.split(key, num=n + 1)
         key = keys[0]

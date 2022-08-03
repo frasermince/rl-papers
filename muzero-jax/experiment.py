@@ -65,8 +65,8 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self.rollout_size = 5
         self.key = random.PRNGKey(0)
         self.network = MuZeroNet()
-        # self.halting_steps = 232
-        self.halting_steps = 70
+        self.halting_steps = 232
+        # self.halting_steps = 70
       
         self.memory = MuZeroMemory(5000, rollout_size=rollout_size)
         register_pytree_node(
@@ -85,14 +85,14 @@ class MuzeroExperiment(experiment.AbstractExperiment):
             experience_replay.muzero_unflatten
         )
         cpu = jax.devices("cpu")[0]
-        with jax.default_device(cpu):
-          filehandler = open("./starting_memories.obj", 'rb') 
-          # self.memory = pickle.load(filehandler)
-          # self.memory = jax.device_put(self.memory, cpu)
-          self.memory.length = 5000
-          self.memory.games = list(self.memory.games)
-          filehandler.close()
-          filehandler = None
+        # with jax.default_device(cpu):
+        #   filehandler = open("./starting_memories.obj", 'rb') 
+        #   self.memory = pickle.load(filehandler)
+        #   self.memory = jax.device_put(self.memory, cpu)
+        #   self.memory.length = 5000
+        #   self.memory.games = list(self.memory.games)
+        #   filehandler.close()
+        #   filehandler = None
 
         self.multiple = 8
         self.num_envs = self.multiple * 16#176
@@ -260,6 +260,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     if self._train_input is None:
       self._initialize_train()
 
+    print("GAMES", self.memory.item_count())
     while self.memory.item_count() < self.batch_size:
       if self.memory.item_count() != self.game_count:
         print("GAMES", self.memory.item_count())
@@ -267,6 +268,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       time.sleep(1)
     # file = open('starting_memories.obj', 'wb') 
     # pickle.dump(self.memory, file)
+    # file.close()
 
 
     inputs = next(self._train_input)
