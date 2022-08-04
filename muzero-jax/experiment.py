@@ -228,7 +228,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
 
     with jax.default_device(jax.devices()[7]):
       with jl_utils.log_activity("training loop"):
-        while self.should_run_step(state.global_step, config):
+        while True:
           with jax.profiler.StepTraceAnnotation(
               "train", step_num=state.global_step):
             scalar_outputs = self.step(
@@ -260,7 +260,6 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     if self._train_input is None:
       self._initialize_train()
 
-    print("GAMES", self.memory.item_count())
     while self.memory.item_count() < self.batch_size:
       if self.memory.item_count() != self.game_count:
         print("GAMES", self.memory.item_count())
@@ -289,6 +288,8 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       for i in range(value_difference.shape[0]):
         self.memory.update_priorities(value_difference[i, -1], game_indices[i], step_indices[i])
     if global_step % self.target_update_rate == 0:
+          print("PRIORITIES", value_difference)
+          print("GAMES", self.memory.item_count())
           self._target_params = self._params
 
     scalars = jl_utils.get_first(scalars)

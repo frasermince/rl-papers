@@ -120,9 +120,10 @@ class MuZeroMemory:
             game_memory = GameMemory(rollout_size=self.rollout_size, n_step=self.n_step, discount_rate=self.discount_rate)
             game_memory.add_from_self_play(self_play_memory[i])
             self.games.append(game_memory)
-            self.priorities.append(np.max(self.games[i].priorities))
+            self.priorities.append(np.max(self.games[-1].priorities))
             if len(self.games) > self.length:
                 self.games.pop(0)
+                self.priorities.pop(0)
 
         print("AFTER APPEND", len(self.games))
     def item_count(self):
