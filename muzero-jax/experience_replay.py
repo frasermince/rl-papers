@@ -164,7 +164,7 @@ class MuZeroMemory:
     def fetch_games(self, key, n):
                 
         key, subkey = random.split(key)
-        game_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n), p=np.array(self.priorities)).squeeze()
+        game_indices = random.choice(subkey, np.array(range(len(self.games))), shape=(1, n), p=np.array(self.priorities[0: len(self.games)])).squeeze()
 
         keys = random.split(key, num=n + 1)
         key = keys[0]

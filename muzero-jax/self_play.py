@@ -257,7 +257,7 @@ monte_carlo_fn = jax.pmap(lambda *x: jax.vmap(lambda *y: monte_carlo_tree_search
 get_actions = jax.vmap(lambda current_games, index, steps: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0, None))
 get_observations = jax.vmap(lambda current_games, index, steps, new_observation: jnp.append(lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 31, 31, axis=0), new_observation), (None, 0, None, 0))
 def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
-    (key, params, env, current_games, steps, rewards, temperature) = p
+    (key, params, env, current_games, steps, rewards, temperature, positive_rewards, negative_rewards) = p
     # if self.steps == 1:
     #   self.network.set_device(self.device)
     #   self.target_network.set_device(self.device)
@@ -266,8 +266,13 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # print(rewards[info['env_id']])
     # print(reward)
     positive_reward_mask = reward > 0
-    rewards = rewards.at[info['env_id'][is_done]].set(0)
-    rewards = rewards.at[info['env_id']].set(rewards[info['env_id']] + reward * positive_reward_mask)
+    negative_reward_mask = reward < 0
+    positive_rewards = positive_rewards.at[info['env_id']].set(positive_rewards[info['env_id']] + reward * positive_reward_mask)
+    negative_rewards = negative_rewards.at[info['env_id']].set(negative_rewards[info['env_id']] + reward * negative_reward_mask)
+    if len(info['env_id'][is_done]) > 0:
+      print("IS DONE", info['env_id'][is_done])
+    positive_rewards = positive_rewards.at[info['env_id'][is_done]].set(0)
+    negative_rewards = negative_rewards.at[info['env_id'][is_done]].set(0)
     # get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0))
     # get_observations = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.observations[index], steps[index] - 32, 32, axis=0), (None, 0))
     past_actions = jnp.expand_dims(get_actions(current_games, info['env_id'], steps), axis=1)
@@ -326,7 +331,8 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
       # print("VALUE", value)
       # print("SEARCH PATH", search_env['search_path'][0,0, :])
       print("MAX STEP", jnp.max(steps))
-      print("rewards", jnp.mean(rewards))
+      print("negative rewards", jnp.mean(negative_rewards))
+      print("rewards", jnp.mean(positive_rewards))
 
     observations = None
     past_actions = None
@@ -335,10 +341,10 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     # for i in range(0, info['env_id'].shape[0]):
     #   current_games, steps, _, _, _, _, _, _ = add_item(i, (current_games, steps, info['env_id'], second_observation, action, policy, value, reward))
     # import code; code.interact(local=dict(globals(), **locals()))
-    return (key, params, env, current_games, steps, rewards, temperature)#, game_reward
+    return (key, params, env, current_games, steps, rewards, temperature, positive_rewards, negative_rewards)#, game_reward
 
 # @jax.jit
-def play_game(key, params, self_play_memories, env, steps, rewards, halting_steps, temperature):
+def play_game(key, params, self_play_memories, env, steps, rewards, halting_steps, temperature, positive_rewards, negative_rewards):
     # TODO set 200 per environment
     # (key, params, new_handle, recv, send, self_play_memories) = lax.fori_loop(0, 200, play_step, (key, params, env_handle, recv, send, self_play_memories))
     # return key, current_game_buffer, env_handle
@@ -349,10 +355,10 @@ def play_game(key, params, self_play_memories, env, steps, rewards, halting_step
       steps_ready = False
       for i in range(100):
       #     # TODO backfill from previous memories
-        (key, params, env, self_play_memories, steps, rewards, _) = play_step(i, (key, params, env, self_play_memories, steps, rewards, temperature))
+        (key, params, env, self_play_memories, steps, rewards, _, positive_rewards, negative_rewards) = play_step(i, (key, params, env, self_play_memories, steps, rewards, temperature, positive_rewards, negative_rewards))
         if ((steps >= halting_steps).sum() >= 8):
           steps_ready = True
           break
 
-      return key, self_play_memories, steps, rewards, steps_ready
+      return key, self_play_memories, steps, rewards, steps_ready, positive_rewards, negative_rewards
       # return key, current_game_buffer

@@ -155,6 +155,8 @@ class MuzeroExperiment(experiment.AbstractExperiment):
       # finished_game_buffer = jax.device_put(finished_game_buffer, cpu)
       # with jax.default_device(cpu):
       #   self.memory.append(finished_game_buffer)
+      positive_rewards = jnp.zeros(128)
+      negative_rewards = jnp.zeros(128)
       while(True):
         if self.global_step < 500000:
           temperature = 1
@@ -164,7 +166,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
           temperature = 0.25
         (a, b, c) = self._target_params
         params = (a.copy({}), b.copy({}), c.copy({}))
-        key, game_buffer, steps, rewards, steps_ready = play_game(key, params, game_buffer, self.env, steps, rewards, self.halting_steps, temperature)
+        key, game_buffer, steps, rewards, steps_ready, positive_rewards, negative_rewards = play_game(key, params, game_buffer, self.env, steps, rewards, self.halting_steps, temperature, positive_rewards, negative_rewards)
         # key, game_buffer, self.env_handle = play_game(key, params, starting_memory, handle, recv, send)
         if steps_ready:
           finished_indices = jnp.argwhere(steps >= self.halting_steps).squeeze()
@@ -358,6 +360,13 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         priorities = np.reshape(memories["priority"], (self.training_device_count, int(self.batch_size / self.training_device_count)))
       # result = jax.device_put((observations, actions, policies, values, rewards, game_indices, step_indices, priorities), jax.devices()[7])
       # print("STEP", game_indices, step_indices)
+      print(observations.shape, actions.shape, policies.shape, values.shape, rewards.shape, game_indices.shape, step_indices.shape, priorities.shape)
+      # print("OBS", observations)
+      print("ACTIONS",actions)
+      print("POLICIES", policies)
+      print("PRIOR", priorities)
+      print("VALUES", values)
+      print("REWARDS ALL ZERO", np.all(rewards == 0))
       yield (observations, actions, policies, values, rewards, game_indices, step_indices, priorities)
 
     # per_device_batch_size, ragged = divmod(global_batch_size, num_devices)
