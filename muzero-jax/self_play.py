@@ -269,8 +269,6 @@ def play_step(i, p): #params, current_game_buffer, env_handle, recv, send):
     negative_reward_mask = reward < 0
     positive_rewards = positive_rewards.at[info['env_id']].set(positive_rewards[info['env_id']] + reward * positive_reward_mask)
     negative_rewards = negative_rewards.at[info['env_id']].set(negative_rewards[info['env_id']] + reward * negative_reward_mask)
-    if len(info['env_id'][is_done]) > 0:
-      print("IS DONE", info['env_id'][is_done])
     positive_rewards = positive_rewards.at[info['env_id'][is_done]].set(0)
     negative_rewards = negative_rewards.at[info['env_id'][is_done]].set(0)
     # get_actions = jax.vmap(lambda current_games, index: lax.dynamic_slice_in_dim(current_games.actions[index], steps[index] - 32, 32, axis=0).squeeze(), (None, 0))
