@@ -83,15 +83,9 @@ class SelfPlayMemory:
         self.values = self.observations.at[finished_steps].set(0)
         self.policies = self.policies.at[finished_steps].set(0)
 
-        # self.actions = vmap(lambda index: self.actions[index])(finished_steps)
-        # self.rewards = vmap(lambda index: self.rewards[index])(finished_steps)
-        # self.values = vmap(lambda index: self.values[index])(finished_steps)
-        # self.policies = vmap(lambda index: self.policies[index])(finished_steps)
 
         for i in range(8):
             all_steps = self.set_steps(i, (all_steps, finished_steps))
-        # all_steps, _ = lax.fori_loop(0, 8, self.set_steps, (all_steps, finished_steps))
-        # all_steps = jax.vmap(lambda index: all_steps.at[index].set(32))(finished_steps)
         
         return finished_buffer, all_steps
         
@@ -130,7 +124,6 @@ class MuZeroMemory:
         return len(self.games)
 
     def update_priorities(self, priorities, game_indices, step_indices):
-        # print("PRIORITIES", priorities)
         self.games[game_indices].update_priorities(priorities, step_indices)
         self.priorities[game_indices] = np.max(self.games[game_indices].priorities)
 
@@ -150,12 +143,6 @@ class MuZeroMemory:
         sum = np.sum(priorities)
         # TODO check paper to understand why this is happening
         priorities = lax.cond(np.all(sum == 0), lambda: priorities + (1 / priorities.shape[0]), lambda: priorities / sum)
-        # if sum != 0:
-        #   priorities /= sum
-        # else:
-        #   priorities += 1 / len(priorities)
-
-        # import code; code.interact(local=dict(globals(), **locals()))
         index = random.choice(key, available_indices, p=priorities).squeeze()
         return index, priorities
 
@@ -186,25 +173,9 @@ class MuZeroMemory:
             policies.append(self.games[i].policies)
             rewards.append(self.games[i].rewards)
 
-        # priorities = np.array(priorities)[choices]
         priorities = np.array(priorities)
         choices, priorities = jax.vmap(self.choice, (0, 0))(priorities, keys)
 
-        # for i in random_indices:
-        #     observations.append(self.games[i].observations[choices[i]])
-        #     actions.append(self.games[i].actions[choices[i]])
-        #     values.append(self.games[i].values[choices[i]])
-        #     policies.append(self.games[i].policies[choices[i]])
-        #     rewards.append(self.games[i].rewards[choices[i]])
-        #     game_indices.append(i)
-
-        # observation_result = []
-        # action_result = []
-        # reward_result = []
-        # value_result = []
-        # policy_result = []
-        # step_index_result = []
-        # game_index_result = []
         return key, (np.stack(observations), np.stack(actions), np.stack(values), np.stack(policies), np.stack(rewards), priorities, game_indices, choices)
 
 def compute_nstep_value(i, data):
@@ -214,16 +185,9 @@ def compute_nstep_value(i, data):
   return (starting_index, value, rewards, n_step, discount_rate)
 
 
+# TODO move to fetching out of bounds blank states on sample
 @partial(jax.jit, static_argnums=(7, 8, 9))
 def sample_from_game(observations, actions, values, policies, rewards, game_index, step_index, rollout_size, n_step, discount_rate):
-  # result["observations"].append observation_result.append(result_dict["observations"])
-  # action_result.append(result_dict["actions"])
-  # reward_result.append(result_dict["rewards"])
-  # value_result.append(result_dict["values"])
-  # policy_result.append(result_dict["policies"])
-  # step_index_result.append(result_dict["index"])
-  # game_index_result.append(random_game)
-  # priority_result.append(result_dict["priority"])
   k_step_actions = []
   k_step_rewards = []
   k_step_values = []
@@ -233,21 +197,11 @@ def sample_from_game(observations, actions, values, policies, rewards, game_inde
       k_step_rewards.append(rewards[step_index + k_step])
       _, k_step_value, _, _, _ = lax.fori_loop(0, n_step - 1, compute_nstep_value, (step_index + k_step, rewards[step_index + k_step] - values[step_index + k_step], rewards, n_step, discount_rate))
       k_step_values.append(k_step_value)
-      # k_step_values.append(compute_nstep_value((index + k_step, rewards[index + k_step]) - values[index + k_step], rewards, n_step))
       k_step_policies.append(policies[step_index + k_step])
 
   
   observations = lax.dynamic_slice_in_dim(observations, step_index - 32, 32)
   return (np.array(observations), np.stack(k_step_actions), np.array(k_step_rewards), np.array(k_step_values), np.array(k_step_policies), game_index, step_index)
-  # return key, {
-  #     "observations": np.array(self.observations[index - 32 : index]),
-  #     "actions": np.stack(k_step_actions),
-  #     "rewards": np.array(k_step_rewards),
-  #     "values": np.array(k_step_values),
-  #     "policies": np.array(k_step_policies),
-  #     "index": index,
-  #     "priority": priorities[index],
-  # }
 
 
 @partial(jax.jit, static_argnums=(1,2,3,))
@@ -268,38 +222,6 @@ def memory_sample(data, rollout_size, n_step, discount_rate):
     )
 
     priority_result = jax.vmap((lambda i, j: priorities[i][j]), (0, 0))(game_indices, step_indices)
-    # count = 0
-    # for index in game_indices:
-    #     observation, action, reward, value, policy, game_index, step_index = self.sample_from_game(
-    #         index,
-    #         choices[index],
-    #         self.rollout_size,
-    #         self.n_step,
-    #         device
-    #     )
-
-    #     observations.append(observation)
-    #     actions.append(action)
-    #     policies.append(policy)
-    #     values.append(value)
-    #     rewards.append(reward)
-    #     step_indices.append(step_index)
-    #     count += 1
-    #     priority_result.append(priorities[game_index][step_index])
-
-
-
-    # for random_game in random_games:
-    #     subkey, result_dict = self.games[random_game].sample(subkey, 1)
-
-    #     observation_result.append(result_dict["observations"])
-    #     action_result.append(result_dict["actions"])
-    #     reward_result.append(result_dict["rewards"])
-    #     value_result.append(result_dict["values"])
-    #     policy_result.append(result_dict["policies"])
-    #     step_index_result.append(result_dict["index"])
-    #     game_index_result.append(random_game)
-    #     priority_result.append(result_dict["priority"])
 
     return {
         "observations": observations,
@@ -337,9 +259,6 @@ class GameMemory:
         self.rewards = rewards.squeeze()
         self.values = values.squeeze()
         self.policies = policies.squeeze()
-        # self.priorities.append(abs(values[i] - self.compute_nstep_value(length, values[i])))
-        # print(values, self.compute_nstep_value(length, values))
-        # print("PRIORITIES", abs(values - self.compute_nstep_value(length, values)))
         self.priorities = (abs(values - self.compute_nstep_value(length, values))).squeeze()
 
     def append(self, item):
@@ -349,7 +268,6 @@ class GameMemory:
         self.rewards.append(reward)
         self.values.append(value)
         self.policies.append(policy)
-        # priority = abs(value.item() - self.compute_nstep_value(len(self.priorities), value).item())
         priority = abs(value - self.compute_nstep_value(len(self.priorities), value))
         self.priorities.append(priority)
         
@@ -386,10 +304,8 @@ class GameMemory:
           priorities += 1 / len(priorities)
 
         key, subkey = random.split(key)
-        # import code; code.interact(local=dict(globals(), **locals()))
         index = random.choice(subkey, available_indices, p=priorities).squeeze()
         
-        # for count, i in enumerate(indices):
         k_step_actions = []
         k_step_rewards = []
         k_step_values = []

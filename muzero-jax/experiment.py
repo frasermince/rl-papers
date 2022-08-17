@@ -25,8 +25,11 @@ import pickle
 import jax.lax as lax
 
 
+# config.update('jax_disable_jit', True)
 # TODO move to https://github.com/ray-project/ray/blob/master/python/ray/autoscaler/gcp/tpu.yaml
 # TODO investigate where to add Dirichlet noise
+
+network = MuZeroNet()
 class MuzeroExperiment(experiment.AbstractExperiment):
   CHECKPOINT_ATTRS = {
       '_params': 'params',
@@ -65,9 +68,8 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self.last_hundred = Memory(100)
         self.rollout_size = 5
         self.key = random.PRNGKey(0)
-        self.network = MuZeroNet()
-        # self.halting_steps = 232
-        self.halting_steps = 70
+        self.halting_steps = 232
+        # self.halting_steps = 70
       
         self.memory = MuZeroMemory(5000, rollout_size=rollout_size)
         register_pytree_node(
@@ -220,7 +222,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         self._lr_schedule)
 
     #TODO check how keys in jaxline are supposed to work
-    self.key, representation_params, dynamics_params, prediction_params = self.network.initialize_networks_individual(self.key)
+    self.key, representation_params, dynamics_params, prediction_params = network.initialize_networks_individual(self.key)
     self._params = (representation_params, dynamics_params, prediction_params)
     # init_opt = jax.pmap(self._optimizer.init)
     self._opt_state = self._optimizer.init(self._params)
@@ -387,34 +389,7 @@ class MuzeroExperiment(experiment.AbstractExperiment):
     """One-hot encoding potentially over a sequence of labels."""
     y = jax.nn.one_hot(value, self.config.data.num_classes)
     return y
-
-
-  def rollout_function(self, i, data):
-    hidden_state, value_loss, policy_loss, reward_loss, support_value, search_policy, support_reward, actions, params, return_values = data
-    value, policy, reward, hidden_state, self.key = self.network.forward_hidden_state(self.key, params, actions[:, i, :].astype(float), hidden_state)
-    return_values = return_values.at[i].set(value)
-    # hidden_state.register_hook(lambda grad: grad * 0.5)
-    current_value_loss, current_policy_loss, current_reward_loss = self.losses(i, value, policy, reward, support_value, search_policy, support_reward)
-
-    return (hidden_state,
-      value_loss + current_value_loss,
-      policy_loss + current_policy_loss,
-      reward_loss + current_reward_loss,
-      support_value,
-      search_policy,
-      support_reward,
-      actions,
-      params,
-      return_values)
-
-
-  def losses(self, i, value, policy, reward, support_value, search_policy, support_reward):
-    current_policy_loss = optax.softmax_cross_entropy(policy, search_policy.transpose(1, 0, 2)[i, :, :])
-    current_value_loss = optax.softmax_cross_entropy(value.squeeze(), support_value[:, i, :])
-    current_reward_loss = optax.softmax_cross_entropy(reward, support_reward[:, i, :])
-    return current_value_loss, current_policy_loss, current_reward_loss
-
-
+  
   def _muzero_loss_fn(
       self,
       params,
@@ -436,19 +411,19 @@ class MuzeroExperiment(experiment.AbstractExperiment):
         # TODO add target params
         # forward_observation_fn = jax.pmap(lambda *a: self.network.forward_observation(*a))
         # forward_hidden_state_fn = jax.pmap(lambda *a: self.network.forward_hidden_state(*a))
-        value, policy, reward, hidden_state, self.key = self.network.forward_observation(self.key, params, actions[:, 0, :].astype(float), observations)
+        value, policy, reward, hidden_state, new_key = network.forward_observation(self.key, params, actions[:, 0, :].astype(float), observations)
         values = jnp.zeros_like(value)
         values = jnp.expand_dims(values, axis=0)
         values = jnp.resize(values, (self.rollout_size + 1, values.shape[1], values.shape[2]))
         values = values.at[0].set(value)
 
-        current_value_loss, current_policy_loss, current_reward_loss = self.losses(0, value, policy, reward, support_value, search_policy, support_reward)
+        current_value_loss, current_policy_loss, current_reward_loss = losses(0, value, policy, reward, support_value, search_policy, support_reward)
         # TODO INVESTIGATE GRADIENT SCALING
-        _, value_loss, policy_loss, reward_loss, _, _, _, _, _, values = lax.fori_loop(
+        _, value_loss, policy_loss, reward_loss, _, _, _, _, _, values, new_key = lax.fori_loop(
           1,
           actions.shape[1],
-          self.rollout_function,
-          (hidden_state, current_value_loss, current_policy_loss, current_reward_loss , support_value, search_policy, support_reward, actions, params, values)
+          rollout_function,
+          (hidden_state, current_value_loss, current_policy_loss, current_reward_loss , support_value, search_policy, support_reward, actions, params, values, new_key)
         )
         # for i in range(self.rollout_size):
 
@@ -663,3 +638,35 @@ class MuzeroExperiment(experiment.AbstractExperiment):
 
     mean_scalars = jax.tree_map(lambda x: x / num_samples, summed_scalars)
     return mean_scalars
+
+
+@jax.jit
+def rollout_function(i, data):
+  hidden_state, value_loss, policy_loss, reward_loss, support_value, search_policy, support_reward, actions, params, return_values, key = data
+  key, second_key = random.split(key)
+  value, policy, reward, hidden_state, _ = network.forward_hidden_state(second_key, params, actions[:, i, :].astype(float), hidden_state)
+  return_values = return_values.at[i].set(value)
+  # hidden_state.register_hook(lambda grad: grad * 0.5)
+  current_value_loss, current_policy_loss, current_reward_loss = losses(i, value, policy, reward, support_value, search_policy, support_reward)
+
+  return (hidden_state,
+    value_loss + current_value_loss,
+    policy_loss + current_policy_loss,
+    reward_loss + current_reward_loss,
+    support_value,
+    search_policy,
+    support_reward,
+    actions,
+    params,
+    return_values,
+    key
+  )
+
+
+@jax.jit
+def losses(i, value, policy, reward, support_value, search_policy, support_reward):
+  current_policy_loss = optax.softmax_cross_entropy(policy, search_policy.transpose(1, 0, 2)[i, :, :])
+  current_value_loss = optax.softmax_cross_entropy(value.squeeze(), support_value[:, i, :])
+  current_reward_loss = optax.softmax_cross_entropy(reward, support_reward[:, i, :])
+  return current_value_loss, current_policy_loss, current_reward_loss
+
