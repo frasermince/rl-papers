@@ -32,6 +32,7 @@ absl-py = "^1.1.0"
 tensorflow = "^2.9.1"
 ml-collections = "^0.1.1"
 envpool = "^0.6.2"
+ray = "^1.13.0"
 
 [tool.poetry.dev-dependencies]
 

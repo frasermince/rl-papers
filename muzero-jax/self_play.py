@@ -11,6 +11,8 @@ from operator import itemgetter
 from jax.config import config
 import sys
 from chex import assert_axis_dimension, assert_shape
+from experience_replay import SelfPlayMemory
+import ray
 
 
 # config.update('jax_disable_jit', True)
@@ -262,3 +264,63 @@ def play_game(key, params, self_play_memories, env, steps, rewards, halting_step
           break
 
       return key, self_play_memories, steps, rewards, steps_ready, positive_rewards, negative_rewards
+
+@ray.remote(resources={"tpus": 1})
+class SelfPlayWorker(object):
+  def __init__(self, num_envs, env_batch_size, key):
+        print("***DEVICE COUNT SELF PLAY", jax.device_count(), jax.default_backend())
+        print("***DEVICE COUNT SELF PLAY", jax.devices())
+        print("***DEVICE COUNT SELF PLAY", jax.local_devices())
+        self.env = envpool.make("Pong-v5", env_type="gym", num_envs=num_envs, batch_size=env_batch_size, img_height=96, img_width=96, gray_scale=False, stack_num=1)
+        self.initial_observation = self.env.reset()
+        self.initial_observation = jnp.transpose(jnp.array(self.initial_observation), (0, 2, 3, 1))
+        self.positive_rewards = jnp.zeros(128)
+        self.negative_rewards = jnp.zeros(128)
+        self.halting_steps = 232
+        # self.halting_steps = 70
+        self.global_step = 0
+        self.key = jax.device_put(key, jax.devices()[0])
+        self.rewards =  jnp.zeros(num_envs)
+
+        with jax.default_device(jax.devices()[0]):
+          self.starting_memories = SelfPlayMemory(num_envs, self.halting_steps)
+          self.starting_memories.populate()
+
+
+        with jax.default_device(jax.devices()[0]):
+          self.initial_observation = self.env.reset()
+          self.initial_observation = jnp.transpose(jnp.array(self.initial_observation), (0, 2, 3, 1))
+          starting_policy = jnp.ones(18) / 18
+          for i in range(32):
+            self.starting_memories.observations = self.starting_memories.observations.at[:, i].set(self.initial_observation[0])
+            self.starting_memories.policies = self.starting_memories.policies.at[:, i].set(starting_policy)
+            # self.starting_memories.append((self.initial_observation[0], 0, starting_policy, jnp.broadcast_to(jnp.array(1.0), (1)), 0))
+
+        self.steps = jnp.zeros(self.starting_memories.games, dtype=jnp.int32) + 32
+        self.game_buffer = self.starting_memories
+
+
+  def play(self, params, steps, game_buffer=None):
+    if game_buffer == None:
+      game_buffer = self.starting_memories
+    if self.global_step < 500000:
+      temperature = 1
+    elif  self.global_step < 750000:
+      temperature = 0.5
+    else:
+      temperature = 0.25
+
+    self.key, game_buffer, steps, self.rewards, steps_ready, self.positive_rewards, self.negative_rewards = play_game(
+      self.key,
+      params,
+      game_buffer,
+      self.env,
+      steps,
+      self.rewards,
+      self.halting_steps,
+      temperature,
+      self.positive_rewards, 
+      self.negative_rewards
+    )
+    print("***RESULT", game_buffer, steps, steps_ready)
+    return game_buffer, steps, steps_ready
